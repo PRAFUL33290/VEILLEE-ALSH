@@ -225,6 +225,16 @@ export default function App() {
     setIsSpinning(true);
   }, []);
 
+  const handleSpinInterrupt = useCallback(() => {
+    if (autoRespinTimerRef.current !== null) {
+      window.clearTimeout(autoRespinTimerRef.current);
+      autoRespinTimerRef.current = null;
+    }
+    isSpinningRef.current = false;
+    setIsSpinning(false);
+    setDuplicateNotice(null);
+  }, []);
+
   const handleSpinComplete = useCallback(
     (verifiedSectorIndex: number) => {
       const drawnMudra = MUDRAS[verifiedSectorIndex];
@@ -421,10 +431,11 @@ export default function App() {
             <MudraWheel3D
               ref={wheelRef}
               canSpin={canSpin}
+              canRecordSpin={!hasReachedLevelTarget}
               isSpinning={isSpinning}
-              isLocked={isWheelBusy}
               onWheelClick={handleSpin}
               onManualSpinStart={handleManualSpinStart}
+              onSpinInterrupt={handleSpinInterrupt}
               onSpinComplete={handleSpinComplete}
               highlightFinale={isFinaleCompleted}
               mudraSprites={mudraSprites}
@@ -507,7 +518,7 @@ export default function App() {
 
             <p className="mt-0.5 inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#F3D9A4]/80">
               <Hand className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-              <span>Vous pouvez aussi tourner ou lancer la roue directement au doigt</span>
+              <span>Tournez, lancez ou arrêtez la roue directement au doigt</span>
             </p>
           </div>
         </section>

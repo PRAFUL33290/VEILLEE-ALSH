@@ -26,10 +26,11 @@ export interface MudraWheelHandle {
 
 interface MudraWheel3DProps {
   canSpin: boolean;
+  canRecordSpin: boolean;
   isSpinning: boolean;
-  isLocked?: boolean;
   onWheelClick: () => void;
   onManualSpinStart?: () => void;
+  onSpinInterrupt?: () => void;
   onSpinComplete: (verifiedSectorIndex: number) => void;
   highlightFinale: boolean;
   mudraSprites: Record<number, MudraSpriteAsset>;
@@ -442,10 +443,11 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
   function MudraWheel3D(
     {
       canSpin,
+      canRecordSpin,
       isSpinning,
-      isLocked = false,
       onWheelClick,
       onManualSpinStart,
+      onSpinInterrupt,
       onSpinComplete,
       highlightFinale,
       mudraSprites,
@@ -462,14 +464,17 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
     const canSpinRef = useRef(canSpin);
     canSpinRef.current = canSpin;
 
-    const isLockedRef = useRef(isLocked || isSpinning);
-    isLockedRef.current = isLocked || isSpinning;
+    const canRecordSpinRef = useRef(canRecordSpin);
+    canRecordSpinRef.current = canRecordSpin;
 
     const onWheelClickRef = useRef(onWheelClick);
     onWheelClickRef.current = onWheelClick;
 
     const onManualSpinStartRef = useRef(onManualSpinStart);
     onManualSpinStartRef.current = onManualSpinStart;
+
+    const onSpinInterruptRef = useRef(onSpinInterrupt);
+    onSpinInterruptRef.current = onSpinInterrupt;
 
     const onSpinCompleteRef = useRef(onSpinComplete);
     onSpinCompleteRef.current = onSpinComplete;
@@ -500,6 +505,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
 
     const dragStateRef = useRef<{
       active: boolean;
+      wasCaughtMidSpin: boolean;
       pointerId: number;
       centerX: number;
       centerY: number;
@@ -509,6 +515,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       samples: Array<{ t: number; dRot: number }>;
     }>({
       active: false,
+      wasCaughtMidSpin: false,
       pointerId: -1,
       centerX: 0,
       centerY: 0,
@@ -598,16 +605,25 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         // Only respond to primary touch/mouse button
         if (e.pointerType === 'mouse' && e.button !== 0) return;
 
-        // Do not hijack an official draw spin or duplicate auto-respin
-        if (isLockedRef.current) return;
-
         const st = spinStateRef.current;
-        if (st.active && st.countsForSequence) return;
+        const wasSpinning = st.active || !canSpinRef.current;
+        let caughtMidSpin = false;
 
-        // If a free-play spin is coasting, let the user catch & stop it cleanly
-        if (st.active && !st.countsForSequence) {
+        // Allow grabbing and stopping the wheel at ANY moment mid-spin without validating!
+        if (st.active) {
+          caughtMidSpin = true;
           st.active = false;
+          st.countsForSequence = false;
+          st.landingGlowTime = 0;
           cancelAnimationFrame(fallbackFrameRef.current);
+          onSpinInterruptRef.current?.();
+          if (!useFallback) {
+            triggerLoopRef.current?.();
+          }
+        } else if (wasSpinning && canRecordSpinRef.current) {
+          // Interrupt a pending duplicate auto-respin countdown if the user grabs the wheel
+          caughtMidSpin = true;
+          onSpinInterruptRef.current?.();
         }
 
         const rect = e.currentTarget.getBoundingClientRect();
@@ -617,6 +633,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
 
         dragStateRef.current = {
           active: true,
+          wasCaughtMidSpin: caughtMidSpin,
           pointerId: e.pointerId,
           centerX,
           centerY,
@@ -635,7 +652,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           // Ignore if pointer capture isn't supported
         }
       },
-      [],
+      [useFallback],
     );
 
     const handlePointerMove = useCallback(
@@ -697,7 +714,9 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         const drag = dragStateRef.current;
         if (!drag.active || e.pointerId !== drag.pointerId) return;
 
+        const caughtMidSpin = drag.wasCaughtMidSpin;
         drag.active = false;
+        drag.wasCaughtMidSpin = false;
         setIsDragging(false);
 
         try {
@@ -713,15 +732,16 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         const now = performance.now();
         const elapsedMs = now - drag.startTimeMs;
 
-        // 1. Quick tap -> behave like clicking the wheel to trigger a full draw spin
+        // 1. Quick tap: if wheel was caught mid-spin, keep it stopped (unvalidated).
+        //    Otherwise, behave like clicking the wheel to launch a full draw spin.
         if (drag.totalAbsAngle < 0.085 && elapsedMs < 360) {
-          if (canSpinRef.current && !isLockedRef.current) {
+          if (!caughtMidSpin && canSpinRef.current) {
             onWheelClickRef.current();
           }
           return;
         }
 
-        // 2. Measure angular flick velocity over the last ~110ms window
+        // 2. Measure angular flick velocity over the last ~115ms window
         const recent = drag.samples.filter((s) => now - s.t <= 115);
         let angularVelocity = 0;
         if (recent.length > 0) {
@@ -743,13 +763,13 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           // Snap cleanly onto the exact center of a sector so it never stops on a peg border
           const snappedTarget = Math.round(rawTarget / SECTOR_ANGLE) * SECTOR_ANGLE;
 
-          const countsForSequence = canSpinRef.current && !isLockedRef.current;
+          const countsForSequence = canRecordSpinRef.current;
           if (countsForSequence) {
             onManualSpinStartRef.current?.();
           }
           startSpinAnimation(snappedTarget, durationMs, countsForSequence);
         } else if (!useFallback) {
-          // Gentle manual placement: keep wheel where placed and let clapper settle
+          // Gentle manual stop/placement: wheel stays stopped, unvalidated, clapper settles
           triggerLoopRef.current?.();
         }
       },
@@ -1414,8 +1434,6 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       };
     }, []);
 
-    const lockedNow = isLocked || isSpinning;
-
     return (
       <div
         onPointerDown={handlePointerDown}
@@ -1423,27 +1441,23 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         onPointerUp={(e) => finishDrag(e, false)}
         onPointerCancel={(e) => finishDrag(e, true)}
         role="button"
-        tabIndex={canSpin && !lockedNow ? 0 : -1}
+        tabIndex={canSpin ? 0 : -1}
         aria-label={
           isSpinning
-            ? 'La roue des mudras est en train de tourner'
+            ? 'La roue tourne — touchez-la pour l’arrêter à la main sans valider'
             : canSpin
               ? 'Tourner ou lancer la roue des mudras à la main'
               : 'Tourner librement la roue des 12 mudras à la main'
         }
         onKeyDown={(e) => {
-          if ((e.key === 'Enter' || e.key === ' ') && canSpin && !lockedNow) {
+          if ((e.key === 'Enter' || e.key === ' ') && canSpin) {
             e.preventDefault();
             mudraAudio.unlock();
             onWheelClick();
           }
         }}
         className={`relative flex aspect-square w-full max-w-[600px] items-center justify-center mx-auto rounded-full touch-none select-none outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/60 ${
-          lockedNow
-            ? 'cursor-default'
-            : isDragging
-              ? 'cursor-grabbing'
-              : 'cursor-grab'
+          isDragging ? 'cursor-grabbing' : 'cursor-grab'
         }`}
       >
         {useFallback ? (
