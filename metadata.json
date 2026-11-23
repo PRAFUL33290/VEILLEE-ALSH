@@ -1,0 +1,6 @@
+{
+  "name": "Le défi des Mudras",
+  "description": "Jeu interactif et ludique autour de la danse indienne Bollywood : tournez la grande roue 3D des 12 mudras, mémorisez la séquence et relevez le défi en famille jusqu'à la finale.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
