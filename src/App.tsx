@@ -8,12 +8,15 @@ import {
   Hand,
   Maximize2,
   Minimize2,
+  Minus,
   Music,
   Pause,
   Play,
+  Plus,
   RefreshCw,
   RotateCcw,
   RotateCw,
+  Timer,
   Trophy,
   Undo2,
   Volume2,
@@ -32,6 +35,7 @@ import { MudraSpriteAsset, loadMudraSprites } from './game/mudraSprites';
 import { mudraAudio } from './game/audio';
 import { MudraWheel3D, MudraWheelHandle } from './components/MudraWheel3D';
 import { CelebrationOverlay } from './components/CelebrationOverlay';
+import { CountdownBanner, TimerStatus } from './components/CountdownBanner';
 
 interface DuplicateNotice {
   mudra: MudraSector;
@@ -85,6 +89,8 @@ export default function App() {
   const entryCounterRef = useRef(0);
   const sequenceRef = useRef<SequenceEntry[]>([]);
   const autoRespinTimerRef = useRef<number | null>(null);
+  const timerDeadlineRef = useRef<number>(0);
+  const lastTimerTickSecRef = useRef<number>(0);
 
   const [levelIndex, setLevelIndex] = useState(0);
   const [sequence, setSequence] = useState<SequenceEntry[]>([]);
@@ -98,6 +104,14 @@ export default function App() {
   const [isExpandedView, setIsExpandedView] = useState(false);
   const [showFinaleBanner, setShowFinaleBanner] = useState(true);
   const [mudraSprites, setMudraSprites] = useState<Record<number, MudraSpriteAsset>>({});
+
+  // Optional per-level Contre-la-montre (Time-Trial) state
+  const [timedLevels, setTimedLevels] = useState<Record<number, boolean>>({});
+  const [levelDurations, setLevelDurations] = useState<Record<number, number>>(() =>
+    Object.fromEntries(LEVELS.map((lvl) => [lvl.index, lvl.defaultTimerSeconds])),
+  );
+  const [timerStatus, setTimerStatus] = useState<TimerStatus>('idle');
+  const [remainingMs, setRemainingMs] = useState<number>(LEVELS[0].defaultTimerSeconds * 1000);
 
   useEffect(() => {
     let active = true;
@@ -128,8 +142,40 @@ export default function App() {
   const canAdvanceLevel = hasReachedLevelTarget && !currentLevel.isFinale && !isWheelBusy;
   const canSpin = !isWheelBusy && !hasReachedLevelTarget;
   const latestEntry = sequence.length > 0 ? sequence[sequence.length - 1] : null;
+  const isTimedForCurrentLevel = Boolean(timedLevels[levelIndex]);
+  const currentTimerDurationSec = levelDurations[levelIndex] ?? currentLevel.defaultTimerSeconds;
 
   const levelProgressPercent = Math.min(100, Math.round((sequence.length / targetCount) * 100));
+
+  // Drift-free 60fps countdown loop while Contre-la-montre is actively running
+  useEffect(() => {
+    if (!isTimedForCurrentLevel || timerStatus !== 'running') return;
+
+    let rafId = 0;
+    const step = () => {
+      const nextMs = Math.max(0, timerDeadlineRef.current - performance.now());
+      setRemainingMs(nextMs);
+
+      if (nextMs > 0 && nextMs <= 5000) {
+        const secCeil = Math.ceil(nextMs / 1000);
+        if (secCeil !== lastTimerTickSecRef.current) {
+          lastTimerTickSecRef.current = secCeil;
+          mudraAudio.playTimerTick(secCeil <= 3);
+        }
+      }
+
+      if (nextMs <= 0) {
+        setTimerStatus('expired');
+        mudraAudio.playTimerExpired();
+        return;
+      }
+
+      rafId = requestAnimationFrame(step);
+    };
+
+    rafId = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafId);
+  }, [isTimedForCurrentLevel, timerStatus]);
 
   // Sync fullscreen state with browser events
   useEffect(() => {
@@ -205,6 +251,59 @@ export default function App() {
     }
   }, []);
 
+  const startOrResumeTimer = useCallback(
+    (forceFresh = false) => {
+      mudraAudio.unlock();
+      const baseMs =
+        forceFresh || timerStatus === 'expired' || remainingMs <= 0
+          ? currentTimerDurationSec * 1000
+          : remainingMs;
+      timerDeadlineRef.current = performance.now() + baseMs;
+      lastTimerTickSecRef.current = 0;
+      setRemainingMs(baseMs);
+      setTimerStatus('running');
+    },
+    [currentTimerDurationSec, remainingMs, timerStatus],
+  );
+
+  const handlePauseTimer = useCallback(() => {
+    if (timerStatus !== 'running') return;
+    const left = Math.max(0, timerDeadlineRef.current - performance.now());
+    setRemainingMs(left);
+    setTimerStatus('paused');
+  }, [timerStatus]);
+
+  const handleResetTimer = useCallback(() => {
+    lastTimerTickSecRef.current = 0;
+    setRemainingMs(currentTimerDurationSec * 1000);
+    setTimerStatus('idle');
+  }, [currentTimerDurationSec]);
+
+  const handleToggleLevelTimer = useCallback(() => {
+    mudraAudio.unlock();
+    setTimedLevels((prev) => ({
+      ...prev,
+      [levelIndex]: !prev[levelIndex],
+    }));
+    lastTimerTickSecRef.current = 0;
+    setRemainingMs(currentTimerDurationSec * 1000);
+    setTimerStatus('idle');
+  }, [levelIndex, currentTimerDurationSec]);
+
+  const handleAdjustTimerDuration = useCallback(
+    (deltaSec: number) => {
+      const nextSec = Math.min(180, Math.max(10, currentTimerDurationSec + deltaSec));
+      setLevelDurations((prev) => ({
+        ...prev,
+        [levelIndex]: nextSec,
+      }));
+      lastTimerTickSecRef.current = 0;
+      setRemainingMs(nextSec * 1000);
+      setTimerStatus('idle');
+    },
+    [levelIndex, currentTimerDurationSec],
+  );
+
   const launchWheelSpin = useCallback(() => {
     const selectedIndex = getUniformRandomInt(SECTOR_COUNT);
     const durationMs = getUniformRandomFloat(4400, 5600);
@@ -217,13 +316,26 @@ export default function App() {
   const handleSpin = useCallback(() => {
     mudraAudio.unlock();
     if (isSpinningRef.current || hasReachedLevelTarget || duplicateNotice !== null) return;
+    if (isTimedForCurrentLevel && timerStatus === 'idle') {
+      startOrResumeTimer(true);
+    }
     launchWheelSpin();
-  }, [hasReachedLevelTarget, duplicateNotice, launchWheelSpin]);
+  }, [
+    hasReachedLevelTarget,
+    duplicateNotice,
+    isTimedForCurrentLevel,
+    timerStatus,
+    startOrResumeTimer,
+    launchWheelSpin,
+  ]);
 
   const handleManualSpinStart = useCallback(() => {
     isSpinningRef.current = true;
     setIsSpinning(true);
-  }, []);
+    if (isTimedForCurrentLevel && timerStatus === 'idle') {
+      startOrResumeTimer(true);
+    }
+  }, [isTimedForCurrentLevel, timerStatus, startOrResumeTimer]);
 
   const handleSpinInterrupt = useCallback(() => {
     if (autoRespinTimerRef.current !== null) {
@@ -284,9 +396,14 @@ export default function App() {
   const handleAdvanceLevel = useCallback(() => {
     mudraAudio.unlock();
     if (!canAdvanceLevel) return;
-    setLevelIndex((prev) => Math.min(LEVELS.length - 1, prev + 1));
+    const nextIdx = Math.min(LEVELS.length - 1, levelIndex + 1);
+    const nextDuration = levelDurations[nextIdx] ?? LEVELS[nextIdx].defaultTimerSeconds;
+    setLevelIndex(nextIdx);
+    lastTimerTickSecRef.current = 0;
+    setTimerStatus('idle');
+    setRemainingMs(nextDuration * 1000);
     mudraAudio.playLevelAdvance();
-  }, [canAdvanceLevel]);
+  }, [canAdvanceLevel, levelIndex, levelDurations]);
 
   const handleUndoLast = useCallback(() => {
     if (isSpinningRef.current || duplicateNotice !== null || sequenceRef.current.length === 0) return;
@@ -301,14 +418,18 @@ export default function App() {
       window.clearTimeout(autoRespinTimerRef.current);
       autoRespinTimerRef.current = null;
     }
+    const level0Duration = levelDurations[0] ?? LEVELS[0].defaultTimerSeconds;
     sequenceRef.current = [];
     setSequence([]);
     setDuplicateNotice(null);
     setLevelIndex(0);
+    lastTimerTickSecRef.current = 0;
+    setTimerStatus('idle');
+    setRemainingMs(level0Duration * 1000);
     setIsSequenceHidden(false);
     setShowFinaleBanner(true);
     setIsResetModalOpen(false);
-  }, []);
+  }, [levelDurations]);
 
   const isFullscreenActive = isFullscreen || isExpandedView;
 
@@ -412,11 +533,24 @@ export default function App() {
 
       {/* Main Game Stage */}
       <main className="mx-auto flex w-full max-w-[1380px] flex-1 flex-col gap-6 px-4 py-5 sm:px-6 lg:grid lg:grid-cols-12 lg:items-start lg:gap-8 lg:px-8 lg:py-7">
-        {/* LEFT / CENTER HERO STAGE: The Grand 3D Wheel & Primary Action */}
+        {/* LEFT / CENTER HERO STAGE: Visual Countdown, Grand 3D Wheel & Primary Action */}
         <section
           aria-label="Roue des Mudras"
           className="flex flex-col items-center justify-center lg:col-span-7"
         >
+          {/* Optional Per-Level Visual Countdown above the wheel */}
+          {isTimedForCurrentLevel && (
+            <CountdownBanner
+              levelLabel={currentLevel.label}
+              totalSeconds={currentTimerDurationSec}
+              remainingMs={remainingMs}
+              status={timerStatus}
+              onStartOrResume={() => startOrResumeTimer(false)}
+              onPause={handlePauseTimer}
+              onReset={handleResetTimer}
+            />
+          )}
+
           {/* Warm royal gold aura behind the 3D wheel */}
           <div className="relative flex w-full flex-col items-center">
             <div
@@ -627,6 +761,7 @@ export default function App() {
                   lvl.index < levelIndex ||
                   (lvl.index === levelIndex && sequence.length >= lvl.targetCount);
                 const isCurrent = lvl.index === levelIndex;
+                const hasTimer = Boolean(timedLevels[lvl.index]);
 
                 return (
                   <div
@@ -642,12 +777,74 @@ export default function App() {
                     <div className="text-[11px] font-bold leading-tight truncate">
                       {lvl.shortLabel}
                     </div>
-                    <div className="mt-0.5 text-xs font-extrabold tabular-nums">
-                      {lvl.targetCount}
+                    <div className="mt-0.5 flex items-center justify-center gap-0.5 text-xs font-extrabold tabular-nums">
+                      <span>{lvl.targetCount}</span>
+                      {hasTimer && (
+                        <Timer
+                          className="h-3 w-3 shrink-0 text-[#FCD34D]"
+                          aria-label={`Contre-la-montre actif pour ${lvl.label}`}
+                        />
+                      )}
                     </div>
                   </div>
                 );
               })}
+            </div>
+
+            {/* Optional Per-Level Contre-la-montre Toggle & Duration Adjuster */}
+            <div className="mt-4 border-t border-[#F5B324]/20 pt-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Timer className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                  <span className="text-sm font-bold text-[#FFF8EA] truncate">
+                    Contre-la-montre ({currentLevel.label})
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {isTimedForCurrentLevel && (
+                    <div className="inline-flex items-center rounded-xl border border-[#F5B324]/35 bg-[#240306]/85 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustTimerDuration(-5)}
+                        disabled={currentTimerDurationSec <= 10}
+                        aria-label="Réduire de 5 secondes"
+                        title="Réduire de 5 secondes"
+                        className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center rounded-lg text-[#FCD34D] transition-colors hover:bg-[#5E0A12] disabled:cursor-not-allowed disabled:opacity-35 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                      >
+                        <Minus className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                      <span className="min-w-[46px] px-1.5 text-center text-xs font-extrabold text-[#FFF8EA] tabular-nums">
+                        {currentTimerDurationSec} s
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustTimerDuration(5)}
+                        disabled={currentTimerDurationSec >= 180}
+                        aria-label="Ajouter 5 secondes"
+                        title="Ajouter 5 secondes"
+                        className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center rounded-lg text-[#FCD34D] transition-colors hover:bg-[#5E0A12] disabled:cursor-not-allowed disabled:opacity-35 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                      >
+                        <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isTimedForCurrentLevel}
+                    onClick={handleToggleLevelTimer}
+                    className={`inline-flex min-h-[42px] items-center justify-center rounded-xl border px-3.5 py-2 text-xs sm:text-sm font-extrabold transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0 ${
+                      isTimedForCurrentLevel
+                        ? 'border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] text-[#2B0508] hover:from-[#FCD34D] hover:to-[#EAB308]'
+                        : 'border-[#F5B324]/45 bg-[#5E0A12] text-[#FFF8EA] hover:bg-[#7A1019] hover:border-[#FCD34D]'
+                    }`}
+                  >
+                    {isTimedForCurrentLevel ? 'Activé' : 'Activer'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 

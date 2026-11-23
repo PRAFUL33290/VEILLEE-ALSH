@@ -331,9 +331,9 @@ function createPointerShapeGeometry(): THREE.ExtrudeGeometry {
   });
 }
 
-function easeOutWheel(t: number): number {
+function easeOutWheel(t: number, power = 4.35): number {
   const clamped = Math.min(1, Math.max(0, t));
-  return 1 - Math.pow(1 - clamped, 4.35);
+  return 1 - Math.pow(1 - clamped, power);
 }
 
 /**
@@ -485,6 +485,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
     const mudraSpritesRef = useRef(mudraSprites);
     mudraSpritesRef.current = mudraSprites;
 
+    const wheelBoxRef = useRef<HTMLDivElement | null>(null);
     const faceCanvasRef = useRef<HTMLCanvasElement | null>(null);
     const faceTextureRef = useRef<THREE.CanvasTexture | null>(null);
     const requestRenderRef = useRef<(() => void) | null>(null);
@@ -494,6 +495,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       countsForSequence: true,
       startTime: 0,
       durationMs: 5000,
+      easePower: 4.35,
       startRotationZ: 0,
       targetRotationZ: 0,
       currentRotationZ: 0,
@@ -510,9 +512,14 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       centerX: number;
       centerY: number;
       startTimeMs: number;
+      startRotZ: number;
+      lastMoveTime: number;
+      lastClientX: number;
+      lastClientY: number;
       lastAngle: number;
       totalAbsAngle: number;
-      samples: Array<{ t: number; dRot: number }>;
+      smoothVel: number;
+      moveHistory: Array<{ t: number; rot: number }>;
     }>({
       active: false,
       wasCaughtMidSpin: false,
@@ -520,16 +527,26 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       centerX: 0,
       centerY: 0,
       startTimeMs: 0,
+      startRotZ: 0,
+      lastMoveTime: 0,
+      lastClientX: 0,
+      lastClientY: 0,
       lastAngle: 0,
       totalAbsAngle: 0,
-      samples: [],
+      smoothVel: 0,
+      moveHistory: [],
     });
 
     const triggerLoopRef = useRef<(() => void) | null>(null);
     const fallbackFrameRef = useRef<number>(0);
 
     const startSpinAnimation = useCallback(
-      (targetRot: number, durationMs: number, countsForSequence: boolean) => {
+      (
+        targetRot: number,
+        durationMs: number,
+        countsForSequence: boolean,
+        easePower = 4.35,
+      ) => {
         const st = spinStateRef.current;
         const startRot = st.currentRotationZ;
 
@@ -537,6 +554,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         st.countsForSequence = countsForSequence;
         st.startTime = performance.now();
         st.durationMs = durationMs;
+        st.easePower = easePower;
         st.startRotationZ = startRot;
         st.targetRotationZ = targetRot;
         st.lastPegBucket = Math.floor((startRot + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
@@ -547,14 +565,20 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
             const now = performance.now();
             const elapsed = now - st.startTime;
             const t = Math.min(1, elapsed / st.durationMs);
-            const eased = easeOutWheel(t);
+            const eased = easeOutWheel(t, st.easePower);
             const rot = st.startRotationZ + (st.targetRotationZ - st.startRotationZ) * eased;
             st.currentRotationZ = rot;
 
             const pegBucket = Math.floor((rot + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
             if (pegBucket !== st.lastPegBucket) {
               st.lastPegBucket = pegBucket;
-              mudraAudio.playTick(1 - t);
+              const totalAbsDelta = Math.abs(st.targetRotationZ - st.startRotationZ);
+              const durationSec = Math.max(0.1, st.durationMs / 1000);
+              const instSpeed =
+                ((st.easePower * totalAbsDelta) / durationSec) *
+                Math.pow(1 - t, Math.max(0, st.easePower - 1));
+              const speedFactor = Math.min(1, Math.max(0.06, instSpeed / 20));
+              mudraAudio.playTick(speedFactor);
             }
 
             setFallbackRotationZ(rot);
@@ -631,16 +655,22 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         const centerY = rect.top + rect.height / 2;
         const initialAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
 
+        const now = performance.now();
         dragStateRef.current = {
           active: true,
           wasCaughtMidSpin: caughtMidSpin,
           pointerId: e.pointerId,
           centerX,
           centerY,
-          startTimeMs: performance.now(),
+          startTimeMs: now,
+          startRotZ: st.currentRotationZ,
+          lastMoveTime: now,
+          lastClientX: e.clientX,
+          lastClientY: e.clientY,
           lastAngle: initialAngle,
           totalAbsAngle: 0,
-          samples: [],
+          smoothVel: 0,
+          moveHistory: [],
         };
 
         st.lastPegBucket = Math.floor((st.currentRotationZ + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
@@ -660,20 +690,50 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         const drag = dragStateRef.current;
         if (!drag.active || e.pointerId !== drag.pointerId) return;
 
-        const angle = Math.atan2(e.clientY - drag.centerY, e.clientX - drag.centerX);
-        let dScreen = angle - drag.lastAngle;
-        while (dScreen > Math.PI) dScreen -= TWO_PI;
-        while (dScreen < -Math.PI) dScreen += TWO_PI;
+        const now = performance.now();
+        const rx = e.clientX - drag.centerX;
+        const ry = e.clientY - drag.centerY;
+        const dx = e.clientX - drag.lastClientX;
+        const dy = e.clientY - drag.lastClientY;
+        drag.lastClientX = e.clientX;
+        drag.lastClientY = e.clientY;
+
+        const angle = Math.atan2(ry, rx);
+        const r2 = rx * rx + ry * ry;
+        let dScreen = 0;
+
+        if (r2 >= 30 * 30) {
+          dScreen = angle - drag.lastAngle;
+          while (dScreen > Math.PI) dScreen -= TWO_PI;
+          while (dScreen < -Math.PI) dScreen += TWO_PI;
+        } else {
+          // Center-safe tangential torque so swiping near the hub never flips 180 deg
+          dScreen = (rx * dy - ry * dx) / (30 * 30);
+          if (r2 < 14 * 14 && Math.abs(dScreen) < 0.002) {
+            dScreen = (dy + dx) / 140;
+          }
+        }
         drag.lastAngle = angle;
 
         // Screen clockwise (+dScreen) corresponds to negative Three.js Z rotation (-dScreen)
         const dRot = -dScreen;
         if (Math.abs(dRot) < 0.0001) return;
 
+        const dtSec = Math.max(0.004, Math.min(0.06, (now - drag.lastMoveTime) / 1000));
+        drag.lastMoveTime = now;
+        const instVel = dRot / dtSec;
+        drag.smoothVel =
+          drag.moveHistory.length === 0 ? instVel : drag.smoothVel * 0.45 + instVel * 0.55;
+
         drag.totalAbsAngle += Math.abs(dRot);
 
         const st = spinStateRef.current;
         st.currentRotationZ += dRot;
+
+        drag.moveHistory.push({ t: now, rot: st.currentRotationZ });
+        while (drag.moveHistory.length > 2 && now - drag.moveHistory[0].t > 160) {
+          drag.moveHistory.shift();
+        }
 
         if (rotorGroupRef.current) {
           rotorGroupRef.current.rotation.z = st.currentRotationZ;
@@ -682,14 +742,14 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           setFallbackRotationZ(st.currentRotationZ);
         }
 
-        // Track peg crossings & play tactile sound + spring clapper while turning by hand
+        // Track peg crossings & play tactile sound + spring clapper scaled to actual hand speed
         const pegBucket = Math.floor((st.currentRotationZ + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
         if (pegBucket !== st.lastPegBucket) {
           st.lastPegBucket = pegBucket;
-          const speedFactor = Math.min(1, Math.max(0.18, Math.abs(dRot) * 11));
+          const speedFactor = Math.min(1, Math.max(0.08, Math.abs(drag.smoothVel) / 20));
           const clapperDir = dRot < 0 ? 1 : -1;
           st.pointerVel = THREE.MathUtils.clamp(
-            st.pointerVel + clapperDir * (4.8 + speedFactor * 6.5),
+            st.pointerVel + clapperDir * (3.4 + speedFactor * 8.6),
             -14,
             14,
           );
@@ -698,12 +758,6 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
 
         if (!useFallback) {
           triggerLoopRef.current?.();
-        }
-
-        const now = performance.now();
-        drag.samples.push({ t: now, dRot });
-        while (drag.samples.length > 0 && now - drag.samples[0].t > 110) {
-          drag.samples.shift();
         }
       },
       [useFallback],
@@ -727,47 +781,91 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           // Ignore
         }
 
-        if (cancelled) return;
-
         const now = performance.now();
         const elapsedMs = now - drag.startTimeMs;
+        const history = drag.moveHistory;
 
-        // 1. Quick tap: if wheel was caught mid-spin, keep it stopped (unvalidated).
+        // 1. Quick tap (only when not cancelled): if wheel was caught mid-spin, keep it stopped.
         //    Otherwise, behave like clicking the wheel to launch a full draw spin.
-        if (drag.totalAbsAngle < 0.085 && elapsedMs < 360) {
+        if (!cancelled && drag.totalAbsAngle < 0.08 && elapsedMs < 320) {
           if (!caughtMidSpin && canSpinRef.current) {
             onWheelClickRef.current();
           }
           return;
         }
 
-        // 2. Measure angular flick velocity over the last ~115ms window
-        const recent = drag.samples.filter((s) => now - s.t <= 115);
-        let angularVelocity = 0;
-        if (recent.length > 0) {
-          const sumRot = recent.reduce((acc, s) => acc + s.dRot, 0);
-          const spanSec = Math.max(0.028, (now - recent[0].t) / 1000);
-          angularVelocity = sumRot / spanSec;
+        if (history.length === 0) {
+          if (!useFallback) triggerLoopRef.current?.();
+          return;
         }
 
-        // 3. Flick launch by hand (works clockwise & counter-clockwise!)
-        if (Math.abs(angularVelocity) >= 1.35) {
-          const st = spinStateRef.current;
-          const speedAbs = Math.min(26, Math.max(2.2, Math.abs(angularVelocity)));
-          const strength = (speedAbs - 2.2) / (26 - 2.2); // 0..1
-          const turns = 1.65 + strength * 5.2;
-          const durationMs = 2400 + strength * 2600;
-          const direction = Math.sign(angularVelocity);
+        // 2. iPhone-style position-vs-time velocity tracker (immune to touch liftoff latency)
+        const lastSample = history[history.length - 1];
+        const idleMs = now - lastSample.t;
+        let releaseVel = 0;
 
-          const rawTarget = st.currentRotationZ + direction * turns * TWO_PI;
-          // Snap cleanly onto the exact center of a sector so it never stops on a peg border
-          const snappedTarget = Math.round(rawTarget / SECTOR_ANGLE) * SECTOR_ANGLE;
+        // If user held their finger completely still > 180ms before lifting, they stopped the wheel
+        if (idleMs <= 180) {
+          let rawVel = 0;
+          if (history.length >= 2) {
+            // Find an anchor point ~25-110ms before the final move sample
+            let anchor = history[0];
+            for (let i = history.length - 2; i >= 0; i--) {
+              anchor = history[i];
+              if (lastSample.t - anchor.t >= 60) {
+                break;
+              }
+            }
+            const spanSec = Math.max(0.012, (lastSample.t - anchor.t) / 1000);
+            rawVel = (lastSample.rot - anchor.rot) / spanSec;
+          } else {
+            // Ultra-fast single-frame flick on touch screen
+            const spanSec = Math.min(0.045, Math.max(0.012, (lastSample.t - drag.startTimeMs) / 1000));
+            rawVel = (lastSample.rot - drag.startRotZ) / spanSec;
+          }
+
+          // Full 100% power for normal iPhone/iPad liftoff latency (<= 75ms), smooth taper if slowing down
+          const pauseFactor =
+            idleMs <= 75 ? 1 : Math.max(0, 1 - (idleMs - 75) / 105);
+          releaseVel = rawVel * pauseFactor;
+        }
+
+        // 3. iPhone UIScrollView-style momentum launch:
+        //    gentle push glides slowly & stops near; hard flick flies fast across many turns!
+        if (Math.abs(releaseVel) >= 0.35) {
+          const st = spinStateRef.current;
+          const clampedVel = Math.sign(releaseVel) * Math.min(55, Math.abs(releaseVel));
+          const absVel = Math.abs(clampedVel);
+          const direction = Math.sign(clampedVel);
+          const handEasePower = 2.8;
+
+          // Logarithmic stopping time matching exponential UIScrollView deceleration
+          const naturalDurationSec = Math.min(
+            7.2,
+            Math.max(0.75, Math.log(Math.max(1.5, absVel / 0.28)) / 0.72),
+          );
+          // For easeOutWheel(t, p), initial angular speed is v0 = (p * delta) / T => delta = (v0 * T) / p
+          const rawDelta = (clampedVel * naturalDurationSec) / handEasePower;
+          let snappedTarget =
+            Math.round((st.currentRotationZ + rawDelta) / SECTOR_ANGLE) * SECTOR_ANGLE;
+
+          // Never snap backward against the flick or stop on a microscopic sliver
+          if ((snappedTarget - st.currentRotationZ) * direction < SECTOR_ANGLE * 0.25) {
+            snappedTarget += direction * SECTOR_ANGLE;
+          }
+
+          // Recompute exact duration from snapped distance so release speed matches finger speed 100%
+          const finalDelta = Math.abs(snappedTarget - st.currentRotationZ);
+          const exactDurationMs = Math.max(
+            450,
+            Math.min(7800, ((handEasePower * finalDelta) / absVel) * 1000),
+          );
 
           const countsForSequence = canRecordSpinRef.current;
           if (countsForSequence) {
             onManualSpinStartRef.current?.();
           }
-          startSpinAnimation(snappedTarget, durationMs, countsForSequence);
+          startSpinAnimation(snappedTarget, exactDurationMs, countsForSequence, handEasePower);
         } else if (!useFallback) {
           // Gentle manual stop/placement: wheel stays stopped, unvalidated, clapper settles
           triggerLoopRef.current?.();
@@ -775,6 +873,21 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       },
       [startSpinAnimation, useFallback],
     );
+
+    // Prevent iOS/iPadOS Safari from hijacking fast vertical swipes on the wheel for page scrolling
+    useEffect(() => {
+      const el = wheelBoxRef.current;
+      if (!el) return;
+      const preventTouchScroll = (e: TouchEvent) => {
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+      };
+      el.addEventListener('touchmove', preventTouchScroll, { passive: false });
+      return () => {
+        el.removeEventListener('touchmove', preventTouchScroll);
+      };
+    }, []);
 
     useEffect(() => {
       return () => {
@@ -1296,28 +1409,35 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         if (st.active) {
           const elapsed = now - st.startTime;
           const t = Math.min(1, elapsed / st.durationMs);
-          const eased = easeOutWheel(t);
+          const eased = easeOutWheel(t, st.easePower);
           const rotZ =
             st.startRotationZ + (st.targetRotationZ - st.startRotationZ) * eased;
 
           st.currentRotationZ = rotZ;
           rotorGroup.rotation.z = rotZ;
 
+          const totalAbsDelta = Math.abs(st.targetRotationZ - st.startRotationZ);
+          const durationSec = Math.max(0.1, st.durationMs / 1000);
+          const instSpeed =
+            ((st.easePower * totalAbsDelta) / durationSec) *
+            Math.pow(1 - t, Math.max(0, st.easePower - 1));
+
           // Detect peg boundary crossing at 12 o'clock (works clockwise & counter-clockwise)
           const pegBucket = Math.floor((rotZ + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
           if (pegBucket !== st.lastPegBucket) {
             st.lastPegBucket = pegBucket;
-            const speedFactor = Math.pow(1 - t, 2.5);
+            const speedFactor = Math.min(1, Math.max(0.06, instSpeed / 20));
             const clapperDir = st.targetRotationZ < st.startRotationZ ? 1 : -1;
             st.pointerVel = THREE.MathUtils.clamp(
-              st.pointerVel + clapperDir * (5.8 + speedFactor * 6.8),
+              st.pointerVel + clapperDir * (3.4 + speedFactor * 8.6),
               -14,
               14,
             );
             mudraAudio.playTick(speedFactor);
           }
 
-          const targetTiltX = -0.045 - Math.sin(t * Math.PI) * 0.04;
+          const tiltStrength = Math.min(1, totalAbsDelta / 12);
+          const targetTiltX = -0.045 - Math.sin(t * Math.PI) * 0.04 * tiltStrength;
           stageGroup.rotation.x = THREE.MathUtils.damp(
             stageGroup.rotation.x,
             targetTiltX,
@@ -1436,10 +1556,12 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
 
     return (
       <div
+        ref={wheelBoxRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={(e) => finishDrag(e, false)}
         onPointerCancel={(e) => finishDrag(e, true)}
+        onLostPointerCapture={(e) => finishDrag(e, true)}
         role="button"
         tabIndex={canSpin ? 0 : -1}
         aria-label={

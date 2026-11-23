@@ -17,6 +17,7 @@ export interface GameLevel {
   readonly label: string;
   readonly shortLabel: string;
   readonly targetCount: number;
+  readonly defaultTimerSeconds: number;
   readonly isFinale: boolean;
 }
 
@@ -88,12 +89,12 @@ export const TWO_PI = Math.PI * 2;
 export const SECTOR_ANGLE = TWO_PI / SECTOR_COUNT; // Math.PI / 6 (30 deg)
 
 export const LEVELS: readonly GameLevel[] = [
-  { index: 0, label: 'Niveau 1', shortLabel: 'Niv. 1', targetCount: 2, isFinale: false },
-  { index: 1, label: 'Niveau 2', shortLabel: 'Niv. 2', targetCount: 3, isFinale: false },
-  { index: 2, label: 'Niveau 3', shortLabel: 'Niv. 3', targetCount: 4, isFinale: false },
-  { index: 3, label: 'Niveau 4', shortLabel: 'Niv. 4', targetCount: 5, isFinale: false },
-  { index: 4, label: 'Niveau 5', shortLabel: 'Niv. 5', targetCount: 6, isFinale: false },
-  { index: 5, label: 'Finale', shortLabel: 'Finale', targetCount: 7, isFinale: true },
+  { index: 0, label: 'Niveau 1', shortLabel: 'Niv. 1', targetCount: 2, defaultTimerSeconds: 20, isFinale: false },
+  { index: 1, label: 'Niveau 2', shortLabel: 'Niv. 2', targetCount: 3, defaultTimerSeconds: 25, isFinale: false },
+  { index: 2, label: 'Niveau 3', shortLabel: 'Niv. 3', targetCount: 4, defaultTimerSeconds: 30, isFinale: false },
+  { index: 3, label: 'Niveau 4', shortLabel: 'Niv. 4', targetCount: 5, defaultTimerSeconds: 40, isFinale: false },
+  { index: 4, label: 'Niveau 5', shortLabel: 'Niv. 5', targetCount: 6, defaultTimerSeconds: 50, isFinale: false },
+  { index: 5, label: 'Finale', shortLabel: 'Finale', targetCount: 7, defaultTimerSeconds: 60, isFinale: true },
 ] as const;
 
 /**

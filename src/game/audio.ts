@@ -753,6 +753,68 @@ class MudraAudioEngine {
       osc.stop(start + dur + 0.03);
     });
   }
+
+  /**
+   * Subtle crisp countdown tick during the final 5 seconds of Time-Trial mode.
+   */
+  public playTimerTick(urgent = false): void {
+    const audio = this.getSfxContext();
+    if (!audio) return;
+    const { ctx, out } = audio;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(urgent ? 980 : 760, now);
+    osc.frequency.exponentialRampToValueAtTime(urgent ? 640 : 520, now + 0.06);
+
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(urgent ? 0.12 : 0.08, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.075);
+
+    osc.connect(gain);
+    gain.connect(out);
+    osc.start(now);
+    osc.stop(now + 0.085);
+  }
+
+  /**
+   * Resonant temple gong & descending cadence when the Time-Trial countdown reaches 0.
+   */
+  public playTimerExpired(): void {
+    const audio = this.getSfxContext();
+    if (!audio) return;
+    const { ctx, out } = audio;
+    this.duckMusicTemporarily(1.1);
+
+    const now = ctx.currentTime;
+    const tones = [
+      { freq: 392.0, t: 0, dur: 0.32, type: 'triangle' as OscillatorType, vol: 0.13 },
+      { freq: 329.63, t: 0.18, dur: 0.36, type: 'triangle' as OscillatorType, vol: 0.13 },
+      { freq: 261.63, t: 0.36, dur: 0.85, type: 'sine' as OscillatorType, vol: 0.16 },
+      { freq: 130.81, t: 0.36, dur: 0.95, type: 'triangle' as OscillatorType, vol: 0.12 },
+    ];
+
+    tones.forEach(({ freq, t, dur, type, vol }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = now + t;
+
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, start);
+
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.linearRampToValueAtTime(vol, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+
+      osc.connect(gain);
+      gain.connect(out);
+      osc.start(start);
+      osc.stop(start + dur + 0.04);
+    });
+  }
 }
 
 export const mudraAudio = new MudraAudioEngine();
