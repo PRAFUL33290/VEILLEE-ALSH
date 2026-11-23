@@ -815,6 +815,86 @@ class MudraAudioEngine {
       osc.stop(start + dur + 0.04);
     });
   }
+
+  /**
+   * Celebratory golden chime when awarding a full or half Tortue d'Or clue image to a family.
+   */
+  public playTortueReward(isFull: boolean): void {
+    const audio = this.getSfxContext();
+    if (!audio) return;
+    const { ctx, out } = audio;
+    this.duckMusicTemporarily(isFull ? 1.15 : 0.7);
+
+    const now = ctx.currentTime;
+    const notes = isFull
+      ? [
+          { freq: NOTE.C4, t: 0, dur: 0.28, vol: 0.13 },
+          { freq: NOTE.E4, t: 0.08, dur: 0.3, vol: 0.14 },
+          { freq: NOTE.G4, t: 0.16, dur: 0.35, vol: 0.15 },
+          { freq: NOTE.C5, t: 0.25, dur: 0.65, vol: 0.17 },
+          { freq: NOTE.E5, t: 0.33, dur: 0.72, vol: 0.14 },
+        ]
+      : [
+          { freq: NOTE.G4, t: 0, dur: 0.28, vol: 0.12 },
+          { freq: NOTE.A4, t: 0.11, dur: 0.42, vol: 0.13 },
+        ];
+
+    notes.forEach(({ freq, t, dur, vol }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = now + t;
+
+      osc.type = isFull ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq, start);
+
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.linearRampToValueAtTime(vol, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+
+      osc.connect(gain);
+      gain.connect(out);
+      osc.start(start);
+      osc.stop(start + dur + 0.04);
+    });
+  }
+
+  /**
+   * Short, unmistakable chime when marking a family's challenge for a level as passed or failed.
+   */
+  public playTeamLevelVerdict(passed: boolean): void {
+    const audio = this.getSfxContext();
+    if (!audio) return;
+    const { ctx, out } = audio;
+
+    const now = ctx.currentTime;
+    const notes = passed
+      ? [
+          { freq: NOTE.G4, t: 0, dur: 0.16, vol: 0.11, type: 'triangle' as OscillatorType },
+          { freq: NOTE.C5, t: 0.075, dur: 0.26, vol: 0.13, type: 'triangle' as OscillatorType },
+        ]
+      : [
+          { freq: NOTE.E4, t: 0, dur: 0.14, vol: 0.1, type: 'sine' as OscillatorType },
+          { freq: NOTE.C4, t: 0.085, dur: 0.24, vol: 0.11, type: 'sine' as OscillatorType },
+        ];
+
+    notes.forEach(({ freq, t, dur, vol, type }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = now + t;
+
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, start);
+
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.linearRampToValueAtTime(vol, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+
+      osc.connect(gain);
+      gain.connect(out);
+      osc.start(start);
+      osc.stop(start + dur + 0.03);
+    });
+  }
 }
 
 export const mudraAudio = new MudraAudioEngine();

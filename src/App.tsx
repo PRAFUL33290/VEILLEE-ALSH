@@ -36,6 +36,128 @@ import { mudraAudio } from './game/audio';
 import { MudraWheel3D, MudraWheelHandle } from './components/MudraWheel3D';
 import { CelebrationOverlay } from './components/CelebrationOverlay';
 import { CountdownBanner, TimerStatus } from './components/CountdownBanner';
+import {
+  DuelFamilySlot,
+  FamilyDuelBar,
+  FamilyOutcome,
+  LevelAttemptStatus,
+  SavedDuelRecord,
+  TortueRewardPreview,
+  countEvaluatedLevels,
+  createEmptyLevelResults,
+  getDisplayFamilyName,
+  sanitizeLevelResults,
+} from './components/FamilyDuelBar';
+import { DuelHistoryModal } from './components/DuelHistoryModal';
+
+const CURRENT_DUEL_STORAGE_KEY = 'mudra-current-duel-v2';
+const SAVED_DUELS_STORAGE_KEY = 'mudra-saved-duels-v1';
+const DEFAULT_LEVEL_TIMER_SECONDS = 60; // 1 minute per level
+const DUEL_LIMIT_SECONDS = 8 * 60; // 8 minutes total per duel
+
+function createDefaultDuelFamilies(): [DuelFamilySlot, DuelFamilySlot] {
+  return [
+    {
+      id: 0,
+      name: '',
+      outcome: 'pending',
+      levelResults: createEmptyLevelResults(),
+      mudrasReached: null,
+      elapsedSec: null,
+    },
+    {
+      id: 1,
+      name: '',
+      outcome: 'pending',
+      levelResults: createEmptyLevelResults(),
+      mudrasReached: null,
+      elapsedSec: null,
+    },
+  ];
+}
+
+function sanitizeOutcome(value: unknown): FamilyOutcome {
+  if (value === 'complete' || value === 'partial' || value === 'pending') return value;
+  return 'pending';
+}
+
+function loadCurrentDuelFamilies(): [DuelFamilySlot, DuelFamilySlot] {
+  if (typeof window === 'undefined') return createDefaultDuelFamilies();
+  try {
+    const raw = window.localStorage.getItem(CURRENT_DUEL_STORAGE_KEY);
+    if (!raw) return createDefaultDuelFamilies();
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed) && parsed.length === 2) {
+      const f0 = parsed[0] as Partial<DuelFamilySlot>;
+      const f1 = parsed[1] as Partial<DuelFamilySlot>;
+      return [
+        {
+          id: 0,
+          name: typeof f0?.name === 'string' ? f0.name.slice(0, 32) : '',
+          outcome: sanitizeOutcome(f0?.outcome),
+          levelResults: sanitizeLevelResults(f0?.levelResults),
+          mudrasReached: typeof f0?.mudrasReached === 'number' ? f0.mudrasReached : null,
+          elapsedSec: typeof f0?.elapsedSec === 'number' ? f0.elapsedSec : null,
+        },
+        {
+          id: 1,
+          name: typeof f1?.name === 'string' ? f1.name.slice(0, 32) : '',
+          outcome: sanitizeOutcome(f1?.outcome),
+          levelResults: sanitizeLevelResults(f1?.levelResults),
+          mudrasReached: typeof f1?.mudrasReached === 'number' ? f1.mudrasReached : null,
+          elapsedSec: typeof f1?.elapsedSec === 'number' ? f1.elapsedSec : null,
+        },
+      ];
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  return createDefaultDuelFamilies();
+}
+
+function loadSavedDuels(): SavedDuelRecord[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(SAVED_DUELS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is SavedDuelRecord => Boolean(item && typeof item === 'object'))
+      .map((item, idx) => ({
+        id: typeof item.id === 'string' ? item.id : `duel-${idx}`,
+        duelNumber: typeof item.duelNumber === 'number' ? item.duelNumber : idx + 1,
+        recordedAtIso:
+          typeof item.recordedAtIso === 'string'
+            ? item.recordedAtIso
+            : new Date().toISOString(),
+        familyA: {
+          name: typeof item.familyA?.name === 'string' ? item.familyA.name : 'FAMILLE 1',
+          outcome: sanitizeOutcome(item.familyA?.outcome),
+          levelResults: sanitizeLevelResults(item.familyA?.levelResults),
+          mudrasReached:
+            typeof item.familyA?.mudrasReached === 'number'
+              ? item.familyA.mudrasReached
+              : null,
+          elapsedSec:
+            typeof item.familyA?.elapsedSec === 'number' ? item.familyA.elapsedSec : null,
+        },
+        familyB: {
+          name: typeof item.familyB?.name === 'string' ? item.familyB.name : 'FAMILLE 2',
+          outcome: sanitizeOutcome(item.familyB?.outcome),
+          levelResults: sanitizeLevelResults(item.familyB?.levelResults),
+          mudrasReached:
+            typeof item.familyB?.mudrasReached === 'number'
+              ? item.familyB.mudrasReached
+              : null,
+          elapsedSec:
+            typeof item.familyB?.elapsedSec === 'number' ? item.familyB.elapsedSec : null,
+        },
+      }));
+  } catch {
+    return [];
+  }
+}
 
 interface DuplicateNotice {
   mudra: MudraSector;
@@ -105,13 +227,47 @@ export default function App() {
   const [showFinaleBanner, setShowFinaleBanner] = useState(true);
   const [mudraSprites, setMudraSprites] = useState<Record<number, MudraSpriteAsset>>({});
 
-  // Optional per-level Contre-la-montre (Time-Trial) state
-  const [timedLevels, setTimedLevels] = useState<Record<number, boolean>>({});
-  const [levelDurations, setLevelDurations] = useState<Record<number, number>>(() =>
-    Object.fromEntries(LEVELS.map((lvl) => [lvl.index, lvl.defaultTimerSeconds])),
-  );
+  // Per-level 1-minute Chrono + total duel elapsed tracker (toward 8 min limit)
+  const [isLevelTimerEnabled, setIsLevelTimerEnabled] = useState(true);
+  const [levelTimerSec, setLevelTimerSec] = useState(DEFAULT_LEVEL_TIMER_SECONDS);
   const [timerStatus, setTimerStatus] = useState<TimerStatus>('idle');
-  const [remainingMs, setRemainingMs] = useState<number>(LEVELS[0].defaultTimerSeconds * 1000);
+  const [remainingMs, setRemainingMs] = useState<number>(DEFAULT_LEVEL_TIMER_SECONDS * 1000);
+  const [duelStartedAtMs, setDuelStartedAtMs] = useState<number | null>(null);
+  const [duelElapsedSec, setDuelElapsedSec] = useState<number>(0);
+
+  // 2-Family Simultaneous Duel & Persistent Matchup History ("Carnet des duels") state
+  const [families, setFamilies] =
+    useState<[DuelFamilySlot, DuelFamilySlot]>(loadCurrentDuelFamilies);
+  const [savedDuels, setSavedDuels] = useState<SavedDuelRecord[]>(loadSavedDuels);
+  const [rewardPreview, setRewardPreview] = useState<TortueRewardPreview | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+  const [hasUnsavedDuelChanges, setHasUnsavedDuelChanges] = useState(false);
+  const [clearFamilyNamesOnReset, setClearFamilyNamesOnReset] = useState(false);
+
+  const familiesRef = useRef(families);
+  familiesRef.current = families;
+  const levelTimerSecRef = useRef(levelTimerSec);
+  levelTimerSecRef.current = levelTimerSec;
+  const duelElapsedSecRef = useRef(duelElapsedSec);
+  duelElapsedSecRef.current = duelElapsedSec;
+  const saveFeedbackTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CURRENT_DUEL_STORAGE_KEY, JSON.stringify(families));
+    } catch {
+      // Ignore storage quota / private mode errors
+    }
+  }, [families]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SAVED_DUELS_STORAGE_KEY, JSON.stringify(savedDuels));
+    } catch {
+      // Ignore storage quota / private mode errors
+    }
+  }, [savedDuels]);
 
   useEffect(() => {
     let active = true;
@@ -128,6 +284,9 @@ export default function App() {
       if (autoRespinTimerRef.current !== null) {
         window.clearTimeout(autoRespinTimerRef.current);
       }
+      if (saveFeedbackTimerRef.current !== null) {
+        window.clearTimeout(saveFeedbackTimerRef.current);
+      }
       mudraAudio.setMusicPlaying(false);
     };
   }, []);
@@ -142,21 +301,32 @@ export default function App() {
   const canAdvanceLevel = hasReachedLevelTarget && !currentLevel.isFinale && !isWheelBusy;
   const canSpin = !isWheelBusy && !hasReachedLevelTarget;
   const latestEntry = sequence.length > 0 ? sequence[sequence.length - 1] : null;
-  const isTimedForCurrentLevel = Boolean(timedLevels[levelIndex]);
-  const currentTimerDurationSec = levelDurations[levelIndex] ?? currentLevel.defaultTimerSeconds;
+  const familyADisplayName = getDisplayFamilyName(families[0].name, 0);
+  const familyBDisplayName = getDisplayFamilyName(families[1].name, 1);
 
   const levelProgressPercent = Math.min(100, Math.round((sequence.length / targetCount) * 100));
 
-  // Drift-free 60fps countdown loop while Contre-la-montre is actively running
+  // Track total duel elapsed seconds smoothly once the duel starts
   useEffect(() => {
-    if (!isTimedForCurrentLevel || timerStatus !== 'running') return;
+    if (duelStartedAtMs === null) return;
+    const updateElapsed = () => {
+      setDuelElapsedSec(Math.floor((Date.now() - duelStartedAtMs) / 1000));
+    };
+    updateElapsed();
+    const intervalId = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [duelStartedAtMs]);
+
+  // Drift-free 60fps countdown loop for the 1-minute per-level timer
+  useEffect(() => {
+    if (!isLevelTimerEnabled || timerStatus !== 'running') return;
 
     let rafId = 0;
     const step = () => {
       const nextMs = Math.max(0, timerDeadlineRef.current - performance.now());
       setRemainingMs(nextMs);
 
-      if (nextMs > 0 && nextMs <= 5000) {
+      if (nextMs > 0 && nextMs <= 10000) {
         const secCeil = Math.ceil(nextMs / 1000);
         if (secCeil !== lastTimerTickSecRef.current) {
           lastTimerTickSecRef.current = secCeil;
@@ -175,7 +345,7 @@ export default function App() {
 
     rafId = requestAnimationFrame(step);
     return () => cancelAnimationFrame(rafId);
-  }, [isTimedForCurrentLevel, timerStatus]);
+  }, [isLevelTimerEnabled, timerStatus]);
 
   // Sync fullscreen state with browser events
   useEffect(() => {
@@ -251,19 +421,24 @@ export default function App() {
     }
   }, []);
 
+  const ensureDuelClockStarted = useCallback(() => {
+    setDuelStartedAtMs((prev) => (prev === null ? Date.now() : prev));
+  }, []);
+
   const startOrResumeTimer = useCallback(
     (forceFresh = false) => {
       mudraAudio.unlock();
+      ensureDuelClockStarted();
       const baseMs =
         forceFresh || timerStatus === 'expired' || remainingMs <= 0
-          ? currentTimerDurationSec * 1000
+          ? levelTimerSec * 1000
           : remainingMs;
       timerDeadlineRef.current = performance.now() + baseMs;
       lastTimerTickSecRef.current = 0;
       setRemainingMs(baseMs);
       setTimerStatus('running');
     },
-    [currentTimerDurationSec, remainingMs, timerStatus],
+    [ensureDuelClockStarted, levelTimerSec, remainingMs, timerStatus],
   );
 
   const handlePauseTimer = useCallback(() => {
@@ -275,34 +450,27 @@ export default function App() {
 
   const handleResetTimer = useCallback(() => {
     lastTimerTickSecRef.current = 0;
-    setRemainingMs(currentTimerDurationSec * 1000);
+    setRemainingMs(levelTimerSec * 1000);
     setTimerStatus('idle');
-  }, [currentTimerDurationSec]);
+  }, [levelTimerSec]);
 
   const handleToggleLevelTimer = useCallback(() => {
     mudraAudio.unlock();
-    setTimedLevels((prev) => ({
-      ...prev,
-      [levelIndex]: !prev[levelIndex],
-    }));
+    setIsLevelTimerEnabled((prev) => !prev);
     lastTimerTickSecRef.current = 0;
-    setRemainingMs(currentTimerDurationSec * 1000);
+    setRemainingMs(levelTimerSec * 1000);
     setTimerStatus('idle');
-  }, [levelIndex, currentTimerDurationSec]);
+  }, [levelTimerSec]);
 
-  const handleAdjustTimerDuration = useCallback(
-    (deltaSec: number) => {
-      const nextSec = Math.min(180, Math.max(10, currentTimerDurationSec + deltaSec));
-      setLevelDurations((prev) => ({
-        ...prev,
-        [levelIndex]: nextSec,
-      }));
+  const handleAdjustLevelSeconds = useCallback((deltaSec: number) => {
+    setLevelTimerSec((prevSec) => {
+      const nextSec = Math.min(300, Math.max(15, prevSec + deltaSec));
       lastTimerTickSecRef.current = 0;
       setRemainingMs(nextSec * 1000);
       setTimerStatus('idle');
-    },
-    [levelIndex, currentTimerDurationSec],
-  );
+      return nextSec;
+    });
+  }, []);
 
   const launchWheelSpin = useCallback(() => {
     const selectedIndex = getUniformRandomInt(SECTOR_COUNT);
@@ -316,26 +484,15 @@ export default function App() {
   const handleSpin = useCallback(() => {
     mudraAudio.unlock();
     if (isSpinningRef.current || hasReachedLevelTarget || duplicateNotice !== null) return;
-    if (isTimedForCurrentLevel && timerStatus === 'idle') {
-      startOrResumeTimer(true);
-    }
+    ensureDuelClockStarted();
     launchWheelSpin();
-  }, [
-    hasReachedLevelTarget,
-    duplicateNotice,
-    isTimedForCurrentLevel,
-    timerStatus,
-    startOrResumeTimer,
-    launchWheelSpin,
-  ]);
+  }, [hasReachedLevelTarget, duplicateNotice, ensureDuelClockStarted, launchWheelSpin]);
 
   const handleManualSpinStart = useCallback(() => {
     isSpinningRef.current = true;
     setIsSpinning(true);
-    if (isTimedForCurrentLevel && timerStatus === 'idle') {
-      startOrResumeTimer(true);
-    }
-  }, [isTimedForCurrentLevel, timerStatus, startOrResumeTimer]);
+    ensureDuelClockStarted();
+  }, [ensureDuelClockStarted]);
 
   const handleSpinInterrupt = useCallback(() => {
     if (autoRespinTimerRef.current !== null) {
@@ -397,13 +554,13 @@ export default function App() {
     mudraAudio.unlock();
     if (!canAdvanceLevel) return;
     const nextIdx = Math.min(LEVELS.length - 1, levelIndex + 1);
-    const nextDuration = levelDurations[nextIdx] ?? LEVELS[nextIdx].defaultTimerSeconds;
     setLevelIndex(nextIdx);
+    // Reset the 1-minute level countdown cleanly for the new level
     lastTimerTickSecRef.current = 0;
     setTimerStatus('idle');
-    setRemainingMs(nextDuration * 1000);
+    setRemainingMs(levelTimerSecRef.current * 1000);
     mudraAudio.playLevelAdvance();
-  }, [canAdvanceLevel, levelIndex, levelDurations]);
+  }, [canAdvanceLevel, levelIndex]);
 
   const handleUndoLast = useCallback(() => {
     if (isSpinningRef.current || duplicateNotice !== null || sequenceRef.current.length === 0) return;
@@ -412,24 +569,277 @@ export default function App() {
     setSequence(next);
   }, [duplicateNotice]);
 
-  const handleConfirmReset = useCallback(() => {
-    if (isSpinningRef.current) return;
+  const showSaveToast = useCallback((message: string) => {
+    setSaveFeedback(message);
+    if (saveFeedbackTimerRef.current !== null) {
+      window.clearTimeout(saveFeedbackTimerRef.current);
+    }
+    saveFeedbackTimerRef.current = window.setTimeout(() => {
+      setSaveFeedback(null);
+      saveFeedbackTimerRef.current = null;
+    }, 3400);
+  }, []);
+
+  const handleRenameFamily = useCallback((id: 0 | 1, name: string) => {
+    setFamilies((prev) => {
+      const next: [DuelFamilySlot, DuelFamilySlot] = [prev[0], prev[1]];
+      next[id] = { ...next[id], name };
+      return next;
+    });
+    setHasUnsavedDuelChanges(true);
+  }, []);
+
+  const handleSetFamilyLevelResult = useCallback(
+    (id: 0 | 1, targetLevelIdx: number, status: LevelAttemptStatus) => {
+      mudraAudio.unlock();
+      ensureDuelClockStarted();
+
+      setFamilies((prev) => {
+        const next: [DuelFamilySlot, DuelFamilySlot] = [prev[0], prev[1]];
+        const updatedResults = [...next[id].levelResults];
+        if (targetLevelIdx >= 0 && targetLevelIdx < updatedResults.length) {
+          updatedResults[targetLevelIdx] = status;
+        }
+        next[id] = {
+          ...next[id],
+          levelResults: updatedResults,
+        };
+        return next;
+      });
+      setHasUnsavedDuelChanges(true);
+
+      if (status !== 'pending') {
+        mudraAudio.playTeamLevelVerdict(status === 'passed');
+      }
+    },
+    [ensureDuelClockStarted],
+  );
+
+  const handleSetFamilyOutcome = useCallback(
+    (id: 0 | 1, outcome: FamilyOutcome) => {
+      mudraAudio.unlock();
+      const target = familiesRef.current[id];
+      const mudrasReached =
+        outcome === 'pending'
+          ? null
+          : outcome === 'complete'
+            ? maxFinaleCount
+            : target.mudrasReached ?? sequenceRef.current.length;
+
+      const elapsedSec =
+        outcome === 'pending'
+          ? null
+          : target.elapsedSec ?? (duelElapsedSecRef.current > 0 ? duelElapsedSecRef.current : null);
+
+      setFamilies((prev) => {
+        const next: [DuelFamilySlot, DuelFamilySlot] = [prev[0], prev[1]];
+        next[id] = {
+          ...next[id],
+          outcome,
+          mudrasReached,
+          elapsedSec,
+        };
+        return next;
+      });
+      setHasUnsavedDuelChanges(true);
+
+      if (outcome !== 'pending') {
+        setRewardPreview({
+          familyName: getDisplayFamilyName(target.name, id),
+          outcome,
+          mudrasReached,
+          elapsedSec,
+        });
+        mudraAudio.playTortueReward(outcome === 'complete');
+      }
+    },
+    [maxFinaleCount],
+  );
+
+  const handlePreviewOutcome = useCallback((id: 0 | 1) => {
+    const team = familiesRef.current[id];
+    if (team.outcome === 'pending') return;
+    setRewardPreview({
+      familyName: getDisplayFamilyName(team.name, id),
+      outcome: team.outcome,
+      mudrasReached: team.mudrasReached,
+      elapsedSec: team.elapsedSec,
+    });
+  }, []);
+
+  const resetWheelForNextRun = useCallback(() => {
     if (autoRespinTimerRef.current !== null) {
       window.clearTimeout(autoRespinTimerRef.current);
       autoRespinTimerRef.current = null;
     }
-    const level0Duration = levelDurations[0] ?? LEVELS[0].defaultTimerSeconds;
     sequenceRef.current = [];
     setSequence([]);
     setDuplicateNotice(null);
     setLevelIndex(0);
     lastTimerTickSecRef.current = 0;
     setTimerStatus('idle');
-    setRemainingMs(level0Duration * 1000);
+    setRemainingMs(levelTimerSecRef.current * 1000);
+    setDuelStartedAtMs(null);
+    setDuelElapsedSec(0);
     setIsSequenceHidden(false);
     setShowFinaleBanner(true);
+  }, []);
+
+  const handleSaveDuel = useCallback(() => {
+    const [f0, f1] = familiesRef.current;
+    const nextNumber =
+      savedDuels.reduce((max, d) => Math.max(max, d.duelNumber), 0) + 1;
+
+    const record: SavedDuelRecord = {
+      id: `duel-${Date.now()}-${nextNumber}`,
+      duelNumber: nextNumber,
+      recordedAtIso: new Date().toISOString(),
+      familyA: {
+        name: getDisplayFamilyName(f0.name, 0),
+        outcome: f0.outcome,
+        levelResults: [...f0.levelResults],
+        mudrasReached: f0.mudrasReached,
+        elapsedSec: f0.elapsedSec,
+      },
+      familyB: {
+        name: getDisplayFamilyName(f1.name, 1),
+        outcome: f1.outcome,
+        levelResults: [...f1.levelResults],
+        mudrasReached: f1.mudrasReached,
+        elapsedSec: f1.elapsedSec,
+      },
+    };
+
+    setSavedDuels((prev) => [record, ...prev]);
+    setHasUnsavedDuelChanges(false);
+    showSaveToast(`Duel #${nextNumber} enregistré`);
+  }, [savedDuels, showSaveToast]);
+
+  const handleStartNewDuel = useCallback(() => {
+    if (isSpinningRef.current) return;
+    const [f0, f1] = familiesRef.current;
+    const hasContent =
+      f0.name.trim().length > 0 ||
+      f1.name.trim().length > 0 ||
+      f0.outcome !== 'pending' ||
+      f1.outcome !== 'pending' ||
+      countEvaluatedLevels(f0.levelResults) > 0 ||
+      countEvaluatedLevels(f1.levelResults) > 0;
+
+    // Protect host from losing a completed matchup if they forgot to click "Enregistrer le duel"
+    if (hasUnsavedDuelChanges && hasContent) {
+      const nextNumber =
+        savedDuels.reduce((max, d) => Math.max(max, d.duelNumber), 0) + 1;
+      const autoRecord: SavedDuelRecord = {
+        id: `duel-${Date.now()}-${nextNumber}`,
+        duelNumber: nextNumber,
+        recordedAtIso: new Date().toISOString(),
+        familyA: {
+          name: getDisplayFamilyName(f0.name, 0),
+          outcome: f0.outcome,
+          levelResults: [...f0.levelResults],
+          mudrasReached: f0.mudrasReached,
+          elapsedSec: f0.elapsedSec,
+        },
+        familyB: {
+          name: getDisplayFamilyName(f1.name, 1),
+          outcome: f1.outcome,
+          levelResults: [...f1.levelResults],
+          mudrasReached: f1.mudrasReached,
+          elapsedSec: f1.elapsedSec,
+        },
+      };
+      setSavedDuels((prev) => [autoRecord, ...prev]);
+      showSaveToast(`Duel #${nextNumber} archivé · prêt pour le suivant`);
+    } else {
+      showSaveToast('Prêt pour un nouveau duel');
+    }
+
+    setFamilies(createDefaultDuelFamilies());
+    setHasUnsavedDuelChanges(false);
+    setRewardPreview(null);
+    resetWheelForNextRun();
+  }, [hasUnsavedDuelChanges, savedDuels, showSaveToast, resetWheelForNextRun]);
+
+  const handleUpdateSavedDuelOutcome = useCallback(
+    (duelId: string, side: 'familyA' | 'familyB', outcome: FamilyOutcome) => {
+      setSavedDuels((prev) =>
+        prev.map((d) => {
+          if (d.id !== duelId) return d;
+          return {
+            ...d,
+            [side]: {
+              ...d[side],
+              outcome,
+            },
+          };
+        }),
+      );
+    },
+    [],
+  );
+
+  const handleUpdateSavedDuelLevelResult = useCallback(
+    (
+      duelId: string,
+      side: 'familyA' | 'familyB',
+      targetLevelIdx: number,
+      status: LevelAttemptStatus,
+    ) => {
+      setSavedDuels((prev) =>
+        prev.map((d) => {
+          if (d.id !== duelId) return d;
+          const nextResults = [...d[side].levelResults];
+          if (targetLevelIdx >= 0 && targetLevelIdx < nextResults.length) {
+            nextResults[targetLevelIdx] = status;
+          }
+          return {
+            ...d,
+            [side]: {
+              ...d[side],
+              levelResults: nextResults,
+            },
+          };
+        }),
+      );
+    },
+    [],
+  );
+
+  const handleDeleteSavedDuel = useCallback((duelId: string) => {
+    setSavedDuels((prev) => prev.filter((d) => d.id !== duelId));
+  }, []);
+
+  const handleClearAllSavedDuels = useCallback(() => {
+    setSavedDuels([]);
+  }, []);
+
+  const handleConfirmReset = useCallback(() => {
+    if (isSpinningRef.current) return;
+    resetWheelForNextRun();
+    setRewardPreview(null);
+    setFamilies((prev) => [
+      {
+        id: 0,
+        name: clearFamilyNamesOnReset ? '' : prev[0].name,
+        outcome: 'pending',
+        levelResults: createEmptyLevelResults(),
+        mudrasReached: null,
+        elapsedSec: null,
+      },
+      {
+        id: 1,
+        name: clearFamilyNamesOnReset ? '' : prev[1].name,
+        outcome: 'pending',
+        levelResults: createEmptyLevelResults(),
+        mudrasReached: null,
+        elapsedSec: null,
+      },
+    ]);
+    setHasUnsavedDuelChanges(false);
+    setClearFamilyNamesOnReset(false);
     setIsResetModalOpen(false);
-  }, [levelDurations]);
+  }, [resetWheelForNextRun, clearFamilyNamesOnReset]);
 
   const isFullscreenActive = isFullscreen || isExpandedView;
 
@@ -532,22 +942,45 @@ export default function App() {
       </header>
 
       {/* Main Game Stage */}
-      <main className="mx-auto flex w-full max-w-[1380px] flex-1 flex-col gap-6 px-4 py-5 sm:px-6 lg:grid lg:grid-cols-12 lg:items-start lg:gap-8 lg:px-8 lg:py-7">
-        {/* LEFT / CENTER HERO STAGE: Visual Countdown, Grand 3D Wheel & Primary Action */}
+      <main className="mx-auto flex w-full max-w-[1380px] flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:grid lg:grid-cols-12 lg:items-start lg:gap-x-8 lg:gap-y-6 lg:px-8 lg:py-6">
+        {/* TOP FULL-WIDTH DUEL BAR: 2 Families Playing Simultaneously for Golden Turtle Clues */}
+        <div className="w-full lg:col-span-12">
+          <FamilyDuelBar
+            families={families}
+            currentLevelIndex={levelIndex}
+            currentLevelLabel={currentLevel.label}
+            savedDuelsCount={savedDuels.length}
+            saveFeedback={saveFeedback}
+            onRenameFamily={handleRenameFamily}
+            onSetFamilyLevelResult={handleSetFamilyLevelResult}
+            onSetFamilyOutcome={handleSetFamilyOutcome}
+            onPreviewOutcome={handlePreviewOutcome}
+            onSaveDuel={handleSaveDuel}
+            onStartNewDuel={handleStartNewDuel}
+            onOpenHistory={() => setIsHistoryOpen(true)}
+            rewardPreview={rewardPreview}
+            onCloseRewardPreview={() => setRewardPreview(null)}
+          />
+        </div>
+
+        {/* LEFT / CENTER HERO STAGE: Visual 1-Minute Level Countdown, Grand 3D Wheel & Primary Action */}
         <section
           aria-label="Roue des Mudras"
           className="flex flex-col items-center justify-center lg:col-span-7"
         >
-          {/* Optional Per-Level Visual Countdown above the wheel */}
-          {isTimedForCurrentLevel && (
+          {/* 1-Minute Per-Level Visual Countdown + 8-Minute Duel Elapsed Tracker */}
+          {isLevelTimerEnabled && (
             <CountdownBanner
               levelLabel={currentLevel.label}
-              totalSeconds={currentTimerDurationSec}
+              levelSeconds={levelTimerSec}
               remainingMs={remainingMs}
               status={timerStatus}
+              duelElapsedSec={duelElapsedSec}
+              duelLimitSec={DUEL_LIMIT_SECONDS}
               onStartOrResume={() => startOrResumeTimer(false)}
               onPause={handlePauseTimer}
               onReset={handleResetTimer}
+              onAdjustLevelSeconds={handleAdjustLevelSeconds}
             />
           )}
 
@@ -713,9 +1146,11 @@ export default function App() {
           {/* 1. Level & Progress Panel */}
           <div className="rounded-2xl border border-[#F5B324]/35 bg-[#3B050A]/88 p-5 shadow-md shadow-black/25 backdrop-blur-xs">
             <div className="flex items-baseline justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold text-[#F3D9A4]/80">
-                  Progression du défi
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-[#F3D9A4]/80 truncate">
+                  <span>{familyADisplayName}</span>
+                  <span className="mx-1.5 text-[#FCD34D] font-bold">CONTRE</span>
+                  <span>{familyBDisplayName}</span>
                 </p>
                 <h2 className="mt-0.5 text-xl sm:text-2xl font-extrabold text-[#FFF8EA]">
                   {currentLevel.label}
@@ -761,7 +1196,6 @@ export default function App() {
                   lvl.index < levelIndex ||
                   (lvl.index === levelIndex && sequence.length >= lvl.targetCount);
                 const isCurrent = lvl.index === levelIndex;
-                const hasTimer = Boolean(timedLevels[lvl.index]);
 
                 return (
                   <div
@@ -777,52 +1211,48 @@ export default function App() {
                     <div className="text-[11px] font-bold leading-tight truncate">
                       {lvl.shortLabel}
                     </div>
-                    <div className="mt-0.5 flex items-center justify-center gap-0.5 text-xs font-extrabold tabular-nums">
-                      <span>{lvl.targetCount}</span>
-                      {hasTimer && (
-                        <Timer
-                          className="h-3 w-3 shrink-0 text-[#FCD34D]"
-                          aria-label={`Contre-la-montre actif pour ${lvl.label}`}
-                        />
-                      )}
+                    <div className="mt-0.5 text-xs font-extrabold tabular-nums">
+                      {lvl.targetCount}
                     </div>
                   </div>
                 );
               })}
             </div>
 
-            {/* Optional Per-Level Contre-la-montre Toggle & Duration Adjuster */}
+            {/* 1-Minute Per-Level Chrono Toggle & Duration Adjuster */}
             <div className="mt-4 border-t border-[#F5B324]/20 pt-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2.5">
                 <div className="flex items-center gap-2 min-w-0">
                   <Timer className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
                   <span className="text-sm font-bold text-[#FFF8EA] truncate">
-                    Contre-la-montre ({currentLevel.label})
+                    Chrono par niveau (1 min)
                   </span>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
-                  {isTimedForCurrentLevel && (
+                  {isLevelTimerEnabled && (
                     <div className="inline-flex items-center rounded-xl border border-[#F5B324]/35 bg-[#240306]/85 p-0.5">
                       <button
                         type="button"
-                        onClick={() => handleAdjustTimerDuration(-5)}
-                        disabled={currentTimerDurationSec <= 10}
-                        aria-label="Réduire de 5 secondes"
-                        title="Réduire de 5 secondes"
+                        onClick={() => handleAdjustLevelSeconds(-15)}
+                        disabled={levelTimerSec <= 15}
+                        aria-label="Réduire de 15 secondes"
+                        title="Réduire de 15 secondes"
                         className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center rounded-lg text-[#FCD34D] transition-colors hover:bg-[#5E0A12] disabled:cursor-not-allowed disabled:opacity-35 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
                       >
                         <Minus className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
-                      <span className="min-w-[46px] px-1.5 text-center text-xs font-extrabold text-[#FFF8EA] tabular-nums">
-                        {currentTimerDurationSec} s
+                      <span className="min-w-[52px] px-1.5 text-center text-xs font-extrabold text-[#FFF8EA] tabular-nums">
+                        {levelTimerSec % 60 === 0
+                          ? `${levelTimerSec / 60} min`
+                          : `${levelTimerSec} s`}
                       </span>
                       <button
                         type="button"
-                        onClick={() => handleAdjustTimerDuration(5)}
-                        disabled={currentTimerDurationSec >= 180}
-                        aria-label="Ajouter 5 secondes"
-                        title="Ajouter 5 secondes"
+                        onClick={() => handleAdjustLevelSeconds(15)}
+                        disabled={levelTimerSec >= 300}
+                        aria-label="Ajouter 15 secondes"
+                        title="Ajouter 15 secondes"
                         className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center rounded-lg text-[#FCD34D] transition-colors hover:bg-[#5E0A12] disabled:cursor-not-allowed disabled:opacity-35 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
                       >
                         <Plus className="h-3.5 w-3.5" aria-hidden="true" />
@@ -833,15 +1263,15 @@ export default function App() {
                   <button
                     type="button"
                     role="switch"
-                    aria-checked={isTimedForCurrentLevel}
+                    aria-checked={isLevelTimerEnabled}
                     onClick={handleToggleLevelTimer}
                     className={`inline-flex min-h-[42px] items-center justify-center rounded-xl border px-3.5 py-2 text-xs sm:text-sm font-extrabold transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0 ${
-                      isTimedForCurrentLevel
+                      isLevelTimerEnabled
                         ? 'border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] text-[#2B0508] hover:from-[#FCD34D] hover:to-[#EAB308]'
                         : 'border-[#F5B324]/45 bg-[#5E0A12] text-[#FFF8EA] hover:bg-[#7A1019] hover:border-[#FCD34D]'
                     }`}
                   >
-                    {isTimedForCurrentLevel ? 'Activé' : 'Activer'}
+                    {isLevelTimerEnabled ? 'Activé' : 'Activer'}
                   </button>
                 </div>
               </div>
@@ -1062,9 +1492,19 @@ export default function App() {
             </div>
 
             <p className="mt-3 text-sm sm:text-base leading-relaxed text-[#F3D9A4]/85">
-              La séquence actuelle, le niveau ({currentLevel.label}) et votre
-              progression seront entièrement réinitialisés au Niveau 1.
+              La séquence actuelle, le niveau ({currentLevel.label}) ainsi que les
+              images Tortue d’Or des deux familles seront réinitialisés au Niveau 1.
             </p>
+
+            <label className="mt-4 flex cursor-pointer items-center gap-2.5 rounded-xl border border-[#F5B324]/25 bg-[#240306]/70 px-3.5 py-2.5 text-sm font-semibold text-[#FFF8EA]">
+              <input
+                type="checkbox"
+                checked={clearFamilyNamesOnReset}
+                onChange={(e) => setClearFamilyNamesOnReset(e.target.checked)}
+                className="h-4 w-4 accent-[#DC2626] cursor-pointer"
+              />
+              <span>Effacer aussi les noms des deux familles</span>
+            </label>
 
             <div className="mt-6 flex flex-col-reverse gap-2.5 sm:flex-row sm:justify-end">
               <button
@@ -1086,6 +1526,26 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Persistent Matchup History Modal ("Carnet des duels · Qui contre Qui") */}
+      <DuelHistoryModal
+        open={isHistoryOpen}
+        duels={savedDuels}
+        onClose={() => setIsHistoryOpen(false)}
+        onUpdateDuelOutcome={handleUpdateSavedDuelOutcome}
+        onUpdateDuelLevelResult={handleUpdateSavedDuelLevelResult}
+        onPreviewDuelSide={(familyName, outcome, mudrasReached, elapsedSec) => {
+          setIsHistoryOpen(false);
+          setRewardPreview({
+            familyName,
+            outcome,
+            mudrasReached,
+            elapsedSec,
+          });
+        }}
+        onDeleteDuel={handleDeleteSavedDuel}
+        onClearAllDuels={handleClearAllSavedDuels}
+      />
     </div>
   );
 }
