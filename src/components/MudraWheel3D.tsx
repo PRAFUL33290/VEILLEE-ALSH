@@ -1,5 +1,7 @@
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -25,7 +27,9 @@ export interface MudraWheelHandle {
 interface MudraWheel3DProps {
   canSpin: boolean;
   isSpinning: boolean;
+  isLocked?: boolean;
   onWheelClick: () => void;
+  onManualSpinStart?: () => void;
   onSpinComplete: (verifiedSectorIndex: number) => void;
   highlightFinale: boolean;
   mudraSprites: Record<number, MudraSpriteAsset>;
@@ -337,13 +341,9 @@ function easeOutWheel(t: number): number {
  */
 function FallbackWheelSVG({
   rotationZ,
-  canSpin,
-  onWheelClick,
   mudraSprites,
 }: {
   rotationZ: number;
-  canSpin: boolean;
-  onWheelClick: () => void;
   mudraSprites: Record<number, MudraSpriteAsset>;
 }) {
   const cssDeg = -(rotationZ * 180) / Math.PI;
@@ -353,12 +353,7 @@ function FallbackWheelSVG({
 
   return (
     <div
-      className={`relative flex h-full w-full items-center justify-center select-none ${
-        canSpin ? 'cursor-pointer' : 'cursor-default'
-      }`}
-      onClick={() => {
-        if (canSpin) onWheelClick();
-      }}
+      className="relative flex h-full w-full items-center justify-center select-none pointer-events-none"
       role="img"
       aria-label="Roue interactive des 12 mudras"
     >
@@ -448,7 +443,9 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
     {
       canSpin,
       isSpinning,
+      isLocked = false,
       onWheelClick,
+      onManualSpinStart,
       onSpinComplete,
       highlightFinale,
       mudraSprites,
@@ -456,10 +453,24 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
     ref,
   ) {
     const mountRef = useRef<HTMLDivElement | null>(null);
+    const rotorGroupRef = useRef<THREE.Group | null>(null);
     const [useFallback, setUseFallback] = useState(false);
     const [fallbackRotationZ, setFallbackRotationZ] = useState(0);
+    const [isDragging, setIsDragging] = useState(false);
 
-    // Keep latest callbacks & sprite map in refs so WebGL scene never tears down on prop updates
+    // Keep latest callbacks & flags in refs so WebGL scene never tears down on prop updates
+    const canSpinRef = useRef(canSpin);
+    canSpinRef.current = canSpin;
+
+    const isLockedRef = useRef(isLocked || isSpinning);
+    isLockedRef.current = isLocked || isSpinning;
+
+    const onWheelClickRef = useRef(onWheelClick);
+    onWheelClickRef.current = onWheelClick;
+
+    const onManualSpinStartRef = useRef(onManualSpinStart);
+    onManualSpinStartRef.current = onManualSpinStart;
+
     const onSpinCompleteRef = useRef(onSpinComplete);
     onSpinCompleteRef.current = onSpinComplete;
 
@@ -475,6 +486,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
 
     const spinStateRef = useRef({
       active: false,
+      countsForSequence: true,
       startTime: 0,
       durationMs: 5000,
       startRotationZ: 0,
@@ -486,62 +498,262 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       pointerVel: 0,
     });
 
+    const dragStateRef = useRef<{
+      active: boolean;
+      pointerId: number;
+      centerX: number;
+      centerY: number;
+      startTimeMs: number;
+      lastAngle: number;
+      totalAbsAngle: number;
+      samples: Array<{ t: number; dRot: number }>;
+    }>({
+      active: false,
+      pointerId: -1,
+      centerX: 0,
+      centerY: 0,
+      startTimeMs: 0,
+      lastAngle: 0,
+      totalAbsAngle: 0,
+      samples: [],
+    });
+
     const triggerLoopRef = useRef<(() => void) | null>(null);
     const fallbackFrameRef = useRef<number>(0);
+
+    const startSpinAnimation = useCallback(
+      (targetRot: number, durationMs: number, countsForSequence: boolean) => {
+        const st = spinStateRef.current;
+        const startRot = st.currentRotationZ;
+
+        st.active = true;
+        st.countsForSequence = countsForSequence;
+        st.startTime = performance.now();
+        st.durationMs = durationMs;
+        st.startRotationZ = startRot;
+        st.targetRotationZ = targetRot;
+        st.lastPegBucket = Math.floor((startRot + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
+        st.landingGlowTime = 0;
+
+        if (useFallback) {
+          const stepFallback = () => {
+            const now = performance.now();
+            const elapsed = now - st.startTime;
+            const t = Math.min(1, elapsed / st.durationMs);
+            const eased = easeOutWheel(t);
+            const rot = st.startRotationZ + (st.targetRotationZ - st.startRotationZ) * eased;
+            st.currentRotationZ = rot;
+
+            const pegBucket = Math.floor((rot + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
+            if (pegBucket !== st.lastPegBucket) {
+              st.lastPegBucket = pegBucket;
+              mudraAudio.playTick(1 - t);
+            }
+
+            setFallbackRotationZ(rot);
+
+            if (t < 1 && st.active) {
+              fallbackFrameRef.current = requestAnimationFrame(stepFallback);
+            } else if (st.active) {
+              st.active = false;
+              st.currentRotationZ = st.targetRotationZ;
+              setFallbackRotationZ(st.targetRotationZ);
+              if (st.countsForSequence) {
+                const verified = getSectorIndexAtRotation(st.currentRotationZ);
+                onSpinCompleteRef.current(verified);
+              }
+            }
+          };
+          cancelAnimationFrame(fallbackFrameRef.current);
+          fallbackFrameRef.current = requestAnimationFrame(stepFallback);
+        } else {
+          triggerLoopRef.current?.();
+        }
+      },
+      [useFallback],
+    );
 
     useImperativeHandle(
       ref,
       () => ({
         spinTo(targetSectorIndex: number, durationMs: number) {
           const st = spinStateRef.current;
-          if (st.active) return;
+          if (st.active && st.countsForSequence) return;
+          dragStateRef.current.active = false;
+          setIsDragging(false);
 
           const startRot = st.currentRotationZ;
           const targetRot = computeTargetSpinRotation(startRot, targetSectorIndex);
-
-          st.active = true;
-          st.startTime = performance.now();
-          st.durationMs = durationMs;
-          st.startRotationZ = startRot;
-          st.targetRotationZ = targetRot;
-          st.lastPegBucket = Math.floor((startRot + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
-          st.landingGlowTime = 0;
-
-          if (useFallback) {
-            const stepFallback = () => {
-              const now = performance.now();
-              const elapsed = now - st.startTime;
-              const t = Math.min(1, elapsed / st.durationMs);
-              const eased = easeOutWheel(t);
-              const rot = st.startRotationZ + (st.targetRotationZ - st.startRotationZ) * eased;
-              st.currentRotationZ = rot;
-
-              const pegBucket = Math.floor((rot + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
-              if (pegBucket !== st.lastPegBucket) {
-                st.lastPegBucket = pegBucket;
-                mudraAudio.playTick(1 - t);
-              }
-
-              setFallbackRotationZ(rot);
-
-              if (t < 1) {
-                fallbackFrameRef.current = requestAnimationFrame(stepFallback);
-              } else {
-                st.active = false;
-                st.currentRotationZ = st.targetRotationZ;
-                setFallbackRotationZ(st.targetRotationZ);
-                const verified = getSectorIndexAtRotation(st.currentRotationZ);
-                onSpinCompleteRef.current(verified);
-              }
-            };
-            cancelAnimationFrame(fallbackFrameRef.current);
-            fallbackFrameRef.current = requestAnimationFrame(stepFallback);
-          } else {
-            triggerLoopRef.current?.();
-          }
+          startSpinAnimation(targetRot, durationMs, true);
         },
       }),
+      [startSpinAnimation],
+    );
+
+    const handlePointerDown = useCallback(
+      (e: ReactPointerEvent<HTMLDivElement>) => {
+        // Synchronously unlock Web Audio on iPadOS / iOS Safari on every touch
+        mudraAudio.unlock();
+
+        // Only respond to primary touch/mouse button
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+        // Do not hijack an official draw spin or duplicate auto-respin
+        if (isLockedRef.current) return;
+
+        const st = spinStateRef.current;
+        if (st.active && st.countsForSequence) return;
+
+        // If a free-play spin is coasting, let the user catch & stop it cleanly
+        if (st.active && !st.countsForSequence) {
+          st.active = false;
+          cancelAnimationFrame(fallbackFrameRef.current);
+        }
+
+        const rect = e.currentTarget.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        const initialAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
+
+        dragStateRef.current = {
+          active: true,
+          pointerId: e.pointerId,
+          centerX,
+          centerY,
+          startTimeMs: performance.now(),
+          lastAngle: initialAngle,
+          totalAbsAngle: 0,
+          samples: [],
+        };
+
+        st.lastPegBucket = Math.floor((st.currentRotationZ + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
+        setIsDragging(true);
+
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignore if pointer capture isn't supported
+        }
+      },
+      [],
+    );
+
+    const handlePointerMove = useCallback(
+      (e: ReactPointerEvent<HTMLDivElement>) => {
+        const drag = dragStateRef.current;
+        if (!drag.active || e.pointerId !== drag.pointerId) return;
+
+        const angle = Math.atan2(e.clientY - drag.centerY, e.clientX - drag.centerX);
+        let dScreen = angle - drag.lastAngle;
+        while (dScreen > Math.PI) dScreen -= TWO_PI;
+        while (dScreen < -Math.PI) dScreen += TWO_PI;
+        drag.lastAngle = angle;
+
+        // Screen clockwise (+dScreen) corresponds to negative Three.js Z rotation (-dScreen)
+        const dRot = -dScreen;
+        if (Math.abs(dRot) < 0.0001) return;
+
+        drag.totalAbsAngle += Math.abs(dRot);
+
+        const st = spinStateRef.current;
+        st.currentRotationZ += dRot;
+
+        if (rotorGroupRef.current) {
+          rotorGroupRef.current.rotation.z = st.currentRotationZ;
+        }
+        if (useFallback) {
+          setFallbackRotationZ(st.currentRotationZ);
+        }
+
+        // Track peg crossings & play tactile sound + spring clapper while turning by hand
+        const pegBucket = Math.floor((st.currentRotationZ + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
+        if (pegBucket !== st.lastPegBucket) {
+          st.lastPegBucket = pegBucket;
+          const speedFactor = Math.min(1, Math.max(0.18, Math.abs(dRot) * 11));
+          const clapperDir = dRot < 0 ? 1 : -1;
+          st.pointerVel = THREE.MathUtils.clamp(
+            st.pointerVel + clapperDir * (4.8 + speedFactor * 6.5),
+            -14,
+            14,
+          );
+          mudraAudio.playTick(speedFactor);
+        }
+
+        if (!useFallback) {
+          triggerLoopRef.current?.();
+        }
+
+        const now = performance.now();
+        drag.samples.push({ t: now, dRot });
+        while (drag.samples.length > 0 && now - drag.samples[0].t > 110) {
+          drag.samples.shift();
+        }
+      },
       [useFallback],
+    );
+
+    const finishDrag = useCallback(
+      (e: ReactPointerEvent<HTMLDivElement>, cancelled: boolean) => {
+        const drag = dragStateRef.current;
+        if (!drag.active || e.pointerId !== drag.pointerId) return;
+
+        drag.active = false;
+        setIsDragging(false);
+
+        try {
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+          }
+        } catch {
+          // Ignore
+        }
+
+        if (cancelled) return;
+
+        const now = performance.now();
+        const elapsedMs = now - drag.startTimeMs;
+
+        // 1. Quick tap -> behave like clicking the wheel to trigger a full draw spin
+        if (drag.totalAbsAngle < 0.085 && elapsedMs < 360) {
+          if (canSpinRef.current && !isLockedRef.current) {
+            onWheelClickRef.current();
+          }
+          return;
+        }
+
+        // 2. Measure angular flick velocity over the last ~110ms window
+        const recent = drag.samples.filter((s) => now - s.t <= 115);
+        let angularVelocity = 0;
+        if (recent.length > 0) {
+          const sumRot = recent.reduce((acc, s) => acc + s.dRot, 0);
+          const spanSec = Math.max(0.028, (now - recent[0].t) / 1000);
+          angularVelocity = sumRot / spanSec;
+        }
+
+        // 3. Flick launch by hand (works clockwise & counter-clockwise!)
+        if (Math.abs(angularVelocity) >= 1.35) {
+          const st = spinStateRef.current;
+          const speedAbs = Math.min(26, Math.max(2.2, Math.abs(angularVelocity)));
+          const strength = (speedAbs - 2.2) / (26 - 2.2); // 0..1
+          const turns = 1.65 + strength * 5.2;
+          const durationMs = 2400 + strength * 2600;
+          const direction = Math.sign(angularVelocity);
+
+          const rawTarget = st.currentRotationZ + direction * turns * TWO_PI;
+          // Snap cleanly onto the exact center of a sector so it never stops on a peg border
+          const snappedTarget = Math.round(rawTarget / SECTOR_ANGLE) * SECTOR_ANGLE;
+
+          const countsForSequence = canSpinRef.current && !isLockedRef.current;
+          if (countsForSequence) {
+            onManualSpinStartRef.current?.();
+          }
+          startSpinAnimation(snappedTarget, durationMs, countsForSequence);
+        } else if (!useFallback) {
+          // Gentle manual placement: keep wheel where placed and let clapper settle
+          triggerLoopRef.current?.();
+        }
+      },
+      [startSpinAnimation, useFallback],
     );
 
     useEffect(() => {
@@ -707,6 +919,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       // ================================================================
       const rotorGroup = new THREE.Group();
       rotorGroup.rotation.z = spinStateRef.current.currentRotationZ;
+      rotorGroupRef.current = rotorGroup;
       stageGroup.add(rotorGroup);
 
       // Part 1: Front 12-Sector Solid Mudra Disc (2048x2048 CanvasTexture with Mudra hands)
@@ -1070,12 +1283,17 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           st.currentRotationZ = rotZ;
           rotorGroup.rotation.z = rotZ;
 
-          // Detect peg boundary crossing at 12 o'clock
+          // Detect peg boundary crossing at 12 o'clock (works clockwise & counter-clockwise)
           const pegBucket = Math.floor((rotZ + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
           if (pegBucket !== st.lastPegBucket) {
             st.lastPegBucket = pegBucket;
             const speedFactor = Math.pow(1 - t, 2.5);
-            st.pointerVel = Math.min(14, st.pointerVel + (5.8 + speedFactor * 6.8));
+            const clapperDir = st.targetRotationZ < st.startRotationZ ? 1 : -1;
+            st.pointerVel = THREE.MathUtils.clamp(
+              st.pointerVel + clapperDir * (5.8 + speedFactor * 6.8),
+              -14,
+              14,
+            );
             mudraAudio.playTick(speedFactor);
           }
 
@@ -1092,11 +1310,17 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
             st.currentRotationZ = st.targetRotationZ;
             rotorGroup.rotation.z = st.targetRotationZ;
             st.landingGlowTime = 0.95;
-            const verifiedSector = getSectorIndexAtRotation(st.currentRotationZ);
-            onSpinCompleteRef.current(verifiedSector);
+            if (st.countsForSequence) {
+              const verifiedSector = getSectorIndexAtRotation(st.currentRotationZ);
+              onSpinCompleteRef.current(verifiedSector);
+            }
           }
           needsAnotherFrame = true;
         } else {
+          if (dragStateRef.current.active) {
+            rotorGroup.rotation.z = st.currentRotationZ;
+            needsAnotherFrame = true;
+          }
           if (Math.abs(stageGroup.rotation.x + 0.045) > 0.0008) {
             stageGroup.rotation.x = THREE.MathUtils.damp(
               stageGroup.rotation.x,
@@ -1110,7 +1334,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           }
         }
 
-        // Second-order damped spring physics for the physical top clapper pointer
+        // Second-order damped spring physics for the physical top clapper pointer (bidirectional)
         if (
           Math.abs(st.pointerAngle) > 0.001 ||
           Math.abs(st.pointerVel) > 0.01
@@ -1120,7 +1344,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           const accel = -stiffness * st.pointerAngle - damping * st.pointerVel;
           st.pointerVel += accel * dt;
           st.pointerAngle += st.pointerVel * dt;
-          st.pointerAngle = THREE.MathUtils.clamp(st.pointerAngle, -0.25, 0.52);
+          st.pointerAngle = THREE.MathUtils.clamp(st.pointerAngle, -0.52, 0.52);
           pointerPivot.rotation.z = st.pointerAngle;
           needsAnotherFrame = true;
         } else {
@@ -1172,6 +1396,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         disposed = true;
         triggerLoopRef.current = null;
         requestRenderRef.current = null;
+        rotorGroupRef.current = null;
         faceCanvasRef.current = null;
         faceTextureRef.current = null;
         cancelAnimationFrame(frameId);
@@ -1189,40 +1414,45 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       };
     }, []);
 
+    const lockedNow = isLocked || isSpinning;
+
     return (
-      <div className="relative flex aspect-square w-full max-w-[600px] items-center justify-center mx-auto">
+      <div
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(e) => finishDrag(e, false)}
+        onPointerCancel={(e) => finishDrag(e, true)}
+        role="button"
+        tabIndex={canSpin && !lockedNow ? 0 : -1}
+        aria-label={
+          isSpinning
+            ? 'La roue des mudras est en train de tourner'
+            : canSpin
+              ? 'Tourner ou lancer la roue des mudras à la main'
+              : 'Tourner librement la roue des 12 mudras à la main'
+        }
+        onKeyDown={(e) => {
+          if ((e.key === 'Enter' || e.key === ' ') && canSpin && !lockedNow) {
+            e.preventDefault();
+            mudraAudio.unlock();
+            onWheelClick();
+          }
+        }}
+        className={`relative flex aspect-square w-full max-w-[600px] items-center justify-center mx-auto rounded-full touch-none select-none outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/60 ${
+          lockedNow
+            ? 'cursor-default'
+            : isDragging
+              ? 'cursor-grabbing'
+              : 'cursor-grab'
+        }`}
+      >
         {useFallback ? (
           <FallbackWheelSVG
             rotationZ={fallbackRotationZ}
-            canSpin={canSpin && !isSpinning}
-            onWheelClick={onWheelClick}
             mudraSprites={mudraSprites}
           />
         ) : (
-          <div
-            ref={mountRef}
-            onClick={() => {
-              if (canSpin && !isSpinning) onWheelClick();
-            }}
-            role="button"
-            tabIndex={canSpin && !isSpinning ? 0 : -1}
-            aria-label={
-              isSpinning
-                ? 'La roue des mudras est en train de tourner'
-                : canSpin
-                  ? 'Cliquer sur la roue pour lancer un tirage de mudra'
-                  : 'Roue des 12 mudras'
-            }
-            onKeyDown={(e) => {
-              if ((e.key === 'Enter' || e.key === ' ') && canSpin && !isSpinning) {
-                e.preventDefault();
-                onWheelClick();
-              }
-            }}
-            className={`h-full w-full rounded-full outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/60 ${
-              canSpin && !isSpinning ? 'cursor-pointer' : 'cursor-default'
-            }`}
-          />
+          <div ref={mountRef} className="h-full w-full pointer-events-none" />
         )}
       </div>
     );

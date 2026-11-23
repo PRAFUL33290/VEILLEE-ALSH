@@ -1,5 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, Volume2, VolumeX } from 'lucide-react';
+import {
+  ArrowRight,
+  Check,
+  Disc3,
+  Eye,
+  EyeOff,
+  Hand,
+  Maximize2,
+  Minimize2,
+  Music,
+  Pause,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  RotateCw,
+  Trophy,
+  Undo2,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import {
   LEVELS,
   MUDRAS,
@@ -74,6 +93,7 @@ export default function App() {
   const [isSequenceHidden, setIsSequenceHidden] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isMusicPlaying, setIsMusicPlaying] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpandedView, setIsExpandedView] = useState(false);
   const [showFinaleBanner, setShowFinaleBanner] = useState(true);
@@ -94,6 +114,7 @@ export default function App() {
       if (autoRespinTimerRef.current !== null) {
         window.clearTimeout(autoRespinTimerRef.current);
       }
+      mudraAudio.setMusicPlaying(false);
     };
   }, []);
 
@@ -137,9 +158,19 @@ export default function App() {
   }, [isResetModalOpen]);
 
   const handleToggleMute = useCallback(() => {
+    mudraAudio.unlock();
     setIsMuted((prev) => {
       const next = !prev;
       mudraAudio.setMuted(next);
+      return next;
+    });
+  }, []);
+
+  const handleToggleMusic = useCallback(() => {
+    mudraAudio.unlock();
+    setIsMusicPlaying((prev) => {
+      const next = !prev;
+      mudraAudio.setMusicPlaying(next);
       return next;
     });
   }, []);
@@ -184,9 +215,15 @@ export default function App() {
   }, []);
 
   const handleSpin = useCallback(() => {
+    mudraAudio.unlock();
     if (isSpinningRef.current || hasReachedLevelTarget || duplicateNotice !== null) return;
     launchWheelSpin();
   }, [hasReachedLevelTarget, duplicateNotice, launchWheelSpin]);
+
+  const handleManualSpinStart = useCallback(() => {
+    isSpinningRef.current = true;
+    setIsSpinning(true);
+  }, []);
 
   const handleSpinComplete = useCallback(
     (verifiedSectorIndex: number) => {
@@ -235,6 +272,7 @@ export default function App() {
   );
 
   const handleAdvanceLevel = useCallback(() => {
+    mudraAudio.unlock();
     if (!canAdvanceLevel) return;
     setLevelIndex((prev) => Math.min(LEVELS.length - 1, prev + 1));
     mudraAudio.playLevelAdvance();
@@ -288,36 +326,75 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+            {/* Traditional Indian Background Music Toggle */}
+            <button
+              type="button"
+              onClick={handleToggleMusic}
+              aria-pressed={isMusicPlaying}
+              aria-label={
+                isMusicPlaying
+                  ? 'Couper la musique indienne'
+                  : 'Lancer la musique indienne'
+              }
+              title={
+                isMusicPlaying
+                  ? 'Couper la musique indienne'
+                  : 'Lancer la musique indienne'
+              }
+              className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border px-3 sm:px-3.5 py-2 text-sm font-bold shadow-xs transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0 ${
+                isMusicPlaying
+                  ? 'border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] text-[#2B0508] hover:from-[#FCD34D] hover:to-[#EAB308]'
+                  : 'border-[#F5B324]/45 bg-[#5E0A12] text-[#FFF8EA] hover:bg-[#7A1019] hover:border-[#FCD34D]'
+              }`}
+            >
+              <Music className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span className="hidden md:inline">
+                {isMusicPlaying ? 'Musique active' : 'Musique indienne'}
+              </span>
+            </button>
+
+            {/* Wheel Sound Effects Toggle */}
             <button
               type="button"
               onClick={handleToggleMute}
-              aria-label={isMuted ? 'Activer le son' : 'Couper le son'}
-              title={isMuted ? 'Activer le son' : 'Couper le son'}
+              aria-pressed={!isMuted}
+              aria-label={isMuted ? 'Activer les effets sonores' : 'Couper les effets sonores'}
+              title={isMuted ? 'Activer les effets sonores' : 'Couper les effets sonores'}
               className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3 text-sm font-semibold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
             >
               {isMuted ? (
-                <VolumeX className="h-5 w-5 text-[#F3D9A4]/60" />
+                <VolumeX className="h-5 w-5 text-[#F3D9A4]/60" aria-hidden="true" />
               ) : (
-                <Volume2 className="h-5 w-5 text-[#FCD34D]" />
+                <Volume2 className="h-5 w-5 text-[#FCD34D]" aria-hidden="true" />
               )}
             </button>
 
+            {/* Fullscreen Toggle */}
             <button
               type="button"
               onClick={handleToggleFullscreen}
-              className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3.5 py-2 text-sm font-bold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3 sm:px-3.5 py-2 text-sm font-bold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
             >
-              {isFullscreenActive ? '⛶ Quitter le plein écran' : '⛶ Plein écran'}
+              {isFullscreenActive ? (
+                <Minimize2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+              ) : (
+                <Maximize2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+              )}
+              <span className="hidden sm:inline">
+                {isFullscreenActive ? 'Quitter le plein écran' : 'Plein écran'}
+              </span>
             </button>
 
+            {/* New Game Button */}
             <button
               type="button"
               onClick={() => setIsResetModalOpen(true)}
               disabled={isWheelBusy}
-              className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-[#F5B324]/55 bg-[#7F1119] px-3.5 py-2 text-sm font-bold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#9E1620] hover:border-[#FDE68A] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/55 bg-[#7F1119] px-3 sm:px-3.5 py-2 text-sm font-bold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#9E1620] hover:border-[#FDE68A] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
             >
-              <span className="hidden sm:inline">🔄 Nouvelle partie</span>
-              <span className="sm:hidden">🔄 Rejouer</span>
+              <RotateCcw className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+              <span className="hidden sm:inline">Nouvelle partie</span>
+              <span className="sm:hidden">Rejouer</span>
             </button>
           </div>
         </div>
@@ -345,7 +422,9 @@ export default function App() {
               ref={wheelRef}
               canSpin={canSpin}
               isSpinning={isSpinning}
+              isLocked={isWheelBusy}
               onWheelClick={handleSpin}
+              onManualSpinStart={handleManualSpinStart}
               onSpinComplete={handleSpinComplete}
               highlightFinale={isFinaleCompleted}
               mudraSprites={mudraSprites}
@@ -379,32 +458,57 @@ export default function App() {
               type="button"
               onClick={handleSpin}
               disabled={!canSpin}
-              className={`w-full min-h-[60px] rounded-2xl px-7 py-3.5 text-lg font-extrabold uppercase tracking-wider shadow-lg transition-all duration-150 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/50 whitespace-nowrap ${
+              className={`inline-flex w-full min-h-[60px] items-center justify-center gap-2.5 rounded-2xl px-7 py-3.5 text-lg font-extrabold uppercase tracking-wider shadow-lg transition-all duration-150 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/50 whitespace-nowrap ${
                 canSpin
                   ? 'border-2 border-[#FCD34D]/85 bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-white hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer shadow-black/35'
                   : 'border border-[#F5B324]/25 bg-[#4A090F]/70 text-[#F3D9A4]/50 cursor-not-allowed shadow-none'
               }`}
             >
-              {duplicateNotice
-                ? '🔄 RELANCE AUTOMATIQUE…'
-                : isSpinning
-                  ? '🎡 LA ROUE TOURNE…'
-                  : isFinaleCompleted
-                    ? '🏆 FINALE TERMINÉE (7 MUDRAS)'
-                    : hasReachedLevelTarget
-                      ? `✓ ${currentLevel.label.toUpperCase()} ATTEINT (${targetCount} MUDRAS)`
-                      : '🎡 TOURNER LA ROUE'}
+              {duplicateNotice ? (
+                <>
+                  <RefreshCw className="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
+                  <span>RELANCE AUTOMATIQUE…</span>
+                </>
+              ) : isSpinning ? (
+                <>
+                  <Disc3 className="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
+                  <span>LA ROUE TOURNE…</span>
+                </>
+              ) : isFinaleCompleted ? (
+                <>
+                  <Trophy className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                  <span>FINALE TERMINÉE (7 MUDRAS)</span>
+                </>
+              ) : hasReachedLevelTarget ? (
+                <>
+                  <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                  <span>
+                    {currentLevel.label.toUpperCase()} ATTEINT ({targetCount} MUDRAS)
+                  </span>
+                </>
+              ) : (
+                <>
+                  <RotateCw className="h-5 w-5 shrink-0" aria-hidden="true" />
+                  <span>TOURNER LA ROUE</span>
+                </>
+              )}
             </button>
 
             {canAdvanceLevel && (
               <button
                 type="button"
                 onClick={handleAdvanceLevel}
-                className="animate-lotus-reveal w-full min-h-[58px] rounded-2xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-6 py-3.5 text-base sm:text-lg font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/35 transition-all duration-150 hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/55"
+                className="animate-lotus-reveal inline-flex w-full min-h-[58px] items-center justify-center gap-2.5 rounded-2xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-6 py-3.5 text-base sm:text-lg font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/35 transition-all duration-150 hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/55"
               >
-                NIVEAU RÉUSSI : AJOUTER UN MUDRA
+                <span>NIVEAU RÉUSSI : AJOUTER UN MUDRA</span>
+                <ArrowRight className="h-5 w-5 shrink-0" aria-hidden="true" />
               </button>
             )}
+
+            <p className="mt-0.5 inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#F3D9A4]/80">
+              <Hand className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+              <span>Vous pouvez aussi tourner ou lancer la roue directement au doigt</span>
+            </p>
           </div>
         </section>
 
@@ -420,9 +524,13 @@ export default function App() {
               aria-live="polite"
               className="animate-lotus-reveal rounded-2xl border-2 border-[#FCD34D] bg-[#3B050A]/92 p-5 text-center shadow-lg shadow-black/35"
             >
-              <p className="text-2xl sm:text-[1.65rem] font-extrabold tracking-tight text-[#FDE68A]">
-                🎉 Bravo, Maître des Mudras ! 🪷
-              </p>
+              <div className="flex items-center justify-center gap-2.5">
+                <Trophy className="h-6 w-6 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                <p className="text-2xl sm:text-[1.65rem] font-extrabold tracking-tight text-[#FDE68A]">
+                  Bravo, Maître des Mudras !
+                </p>
+                <LotusEmblem className="h-7 w-7 shrink-0" />
+              </div>
               <p className="mt-1.5 text-sm sm:text-base text-[#FFF8EA]/85">
                 Vous avez réussi les 6 étapes et réuni les 7 mudras de la Finale.
                 Cachez la séquence pour faire la démonstration finale de mémoire !
@@ -431,16 +539,27 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setIsResetModalOpen(true)}
-                  className="min-h-[44px] rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                  className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
                 >
-                  🔄 NOUVELLE PARTIE
+                  <RotateCcw className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>NOUVELLE PARTIE</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowFinaleBanner((prev) => !prev)}
-                  className="min-h-[44px] rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-4 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer"
+                  className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-4 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer"
                 >
-                  {showFinaleBanner ? 'Mettre les pétales en pause' : 'Relancer la fête'}
+                  {showFinaleBanner ? (
+                    <>
+                      <Pause className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                      <span>Mettre les pétales en pause</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                      <span>Relancer la fête</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -555,7 +674,7 @@ export default function App() {
                 </p>
               ) : !latestEntry ? (
                 <p className="text-sm sm:text-base font-medium text-[#F3D9A4]/75">
-                  Appuyez sur « TOURNER LA ROUE » pour découvrir le premier mudra.
+                  Lancez la roue au doigt ou appuyez sur « TOURNER LA ROUE » pour commencer.
                 </p>
               ) : isSequenceHidden ? (
                 <div className="flex flex-col items-center">
@@ -684,18 +803,27 @@ export default function App() {
                     : 'border-[#F5B324]/50 bg-[#7F1119] text-[#FFF8EA] hover:bg-[#9E1620] hover:border-[#FCD34D]'
                 }`}
               >
-                {isSequenceHidden
-                  ? '👀 Afficher la séquence'
-                  : '🙈 Cacher la séquence'}
+                {isSequenceHidden ? (
+                  <>
+                    <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span>Afficher la séquence</span>
+                  </>
+                ) : (
+                  <>
+                    <EyeOff className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                    <span>Cacher la séquence</span>
+                  </>
+                )}
               </button>
 
               <button
                 type="button"
                 onClick={handleUndoLast}
                 disabled={sequence.length === 0 || isWheelBusy}
-                className="inline-flex min-h-[48px] items-center justify-center rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-4 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+                className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-4 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
               >
-                ↩️ Annuler le dernier tirage
+                <Undo2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                <span>Annuler le dernier tirage</span>
               </button>
             </div>
           </div>
@@ -741,9 +869,10 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleConfirmReset}
-                className="min-h-[46px] rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
               >
-                🔄 OUI, NOUVELLE PARTIE
+                <RotateCcw className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>OUI, NOUVELLE PARTIE</span>
               </button>
             </div>
           </div>
