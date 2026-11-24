@@ -87,7 +87,7 @@ export function CountdownBanner({
       role="region"
       aria-label={`Chrono ${levelLabel} — 1 minute par niveau`}
       aria-live={isExpired ? 'assertive' : 'off'}
-      className={`animate-lotus-reveal mb-3 w-full max-w-[540px] rounded-2xl border-2 px-4 py-3 shadow-lg shadow-black/35 backdrop-blur-xs transition-colors ${
+      className={`animate-lotus-reveal mb-2 w-full max-w-[660px] rounded-2xl border-2 px-4 py-2.5 shadow-lg shadow-black/35 backdrop-blur-xs transition-colors ${
         isExpired
           ? 'border-[#EF4444] bg-[#2D0408]/95'
           : isCritical

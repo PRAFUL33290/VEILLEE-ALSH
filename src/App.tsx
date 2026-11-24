@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ArrowLeft,
   ArrowRight,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Disc3,
   Eye,
   EyeOff,
   Hand,
+  Home,
   Maximize2,
   Minimize2,
   Minus,
-  Music,
   Pause,
   Play,
   Plus,
@@ -36,8 +39,10 @@ import { mudraAudio } from './game/audio';
 import { MudraWheel3D, MudraWheelHandle } from './components/MudraWheel3D';
 import { CelebrationOverlay } from './components/CelebrationOverlay';
 import { CountdownBanner, TimerStatus } from './components/CountdownBanner';
+import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import {
   DuelFamilySlot,
+  DuelFinishFooter,
   FamilyDuelBar,
   FamilyOutcome,
   LevelAttemptStatus,
@@ -49,8 +54,23 @@ import {
   sanitizeLevelResults,
 } from './components/FamilyDuelBar';
 import { DuelHistoryModal } from './components/DuelHistoryModal';
+import { HomeScreen } from './components/HomeScreen';
+import {
+  SESSION_PLAY_SECONDS,
+  SESSION_TOTAL_SECONDS,
+  SessionTimerHeader,
+  SessionTimerStatus,
+} from './components/SessionTimerHeader';
+import { InlineMusicPlayer } from './components/YouTubeMusicDock';
+import { auth, googleProvider } from './firebase';
+import {
+  deleteDuelOnServer,
+  saveDuelToServer,
+  subscribeUserDuels,
+  updateDuelLevelResultsOnServer,
+  updateDuelOutcomeOnServer,
+} from './game/duelStore';
 
-const CURRENT_DUEL_STORAGE_KEY = 'mudra-current-duel-v2';
 const SAVED_DUELS_STORAGE_KEY = 'mudra-saved-duels-v1';
 const DEFAULT_LEVEL_TIMER_SECONDS = 60; // 1 minute per level
 const DUEL_LIMIT_SECONDS = 8 * 60; // 8 minutes total per duel
@@ -79,40 +99,6 @@ function createDefaultDuelFamilies(): [DuelFamilySlot, DuelFamilySlot] {
 function sanitizeOutcome(value: unknown): FamilyOutcome {
   if (value === 'complete' || value === 'partial' || value === 'pending') return value;
   return 'pending';
-}
-
-function loadCurrentDuelFamilies(): [DuelFamilySlot, DuelFamilySlot] {
-  if (typeof window === 'undefined') return createDefaultDuelFamilies();
-  try {
-    const raw = window.localStorage.getItem(CURRENT_DUEL_STORAGE_KEY);
-    if (!raw) return createDefaultDuelFamilies();
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed) && parsed.length === 2) {
-      const f0 = parsed[0] as Partial<DuelFamilySlot>;
-      const f1 = parsed[1] as Partial<DuelFamilySlot>;
-      return [
-        {
-          id: 0,
-          name: typeof f0?.name === 'string' ? f0.name.slice(0, 32) : '',
-          outcome: sanitizeOutcome(f0?.outcome),
-          levelResults: sanitizeLevelResults(f0?.levelResults),
-          mudrasReached: typeof f0?.mudrasReached === 'number' ? f0.mudrasReached : null,
-          elapsedSec: typeof f0?.elapsedSec === 'number' ? f0.elapsedSec : null,
-        },
-        {
-          id: 1,
-          name: typeof f1?.name === 'string' ? f1.name.slice(0, 32) : '',
-          outcome: sanitizeOutcome(f1?.outcome),
-          levelResults: sanitizeLevelResults(f1?.levelResults),
-          mudrasReached: typeof f1?.mudrasReached === 'number' ? f1.mudrasReached : null,
-          elapsedSec: typeof f1?.elapsedSec === 'number' ? f1.elapsedSec : null,
-        },
-      ];
-    }
-  } catch {
-    // Ignore storage access errors
-  }
-  return createDefaultDuelFamilies();
 }
 
 function loadSavedDuels(): SavedDuelRecord[] {
@@ -226,6 +212,9 @@ export default function App() {
   const [isExpandedView, setIsExpandedView] = useState(false);
   const [showFinaleBanner, setShowFinaleBanner] = useState(true);
   const [mudraSprites, setMudraSprites] = useState<Record<number, MudraSpriteAsset>>({});
+  const [zoomedMudraIndex, setZoomedMudraIndex] = useState<number | null>(null);
+  const [activeScreen, setActiveScreen] = useState<'home' | 'game'>('home');
+  const [isGameStagePrewarmed, setIsGameStagePrewarmed] = useState(false);
 
   // Per-level 1-minute Chrono + total duel elapsed tracker (toward 8 min limit)
   const [isLevelTimerEnabled, setIsLevelTimerEnabled] = useState(true);
@@ -235,9 +224,18 @@ export default function App() {
   const [duelStartedAtMs, setDuelStartedAtMs] = useState<number | null>(null);
   const [duelElapsedSec, setDuelElapsedSec] = useState<number>(0);
 
+  // Global 8-Minute Session Timer (2 min Règles + 6 min Jeu) shared in header across Home & Game
+  const sessionDeadlineRef = useRef<number>(0);
+  const sessionLastTickSecRef = useRef<number>(0);
+  const sessionRulesChimePlayedRef = useRef<boolean>(false);
+  const [sessionTimerStatus, setSessionTimerStatus] = useState<SessionTimerStatus>('idle');
+  const [sessionRemainingMs, setSessionRemainingMs] = useState<number>(
+    SESSION_TOTAL_SECONDS * 1000,
+  );
+
   // 2-Family Simultaneous Duel & Persistent Matchup History ("Carnet des duels") state
   const [families, setFamilies] =
-    useState<[DuelFamilySlot, DuelFamilySlot]>(loadCurrentDuelFamilies);
+    useState<[DuelFamilySlot, DuelFamilySlot]>(createDefaultDuelFamilies);
   const [savedDuels, setSavedDuels] = useState<SavedDuelRecord[]>(loadSavedDuels);
   const [rewardPreview, setRewardPreview] = useState<TortueRewardPreview | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -245,8 +243,16 @@ export default function App() {
   const [hasUnsavedDuelChanges, setHasUnsavedDuelChanges] = useState(false);
   const [clearFamilyNamesOnReset, setClearFamilyNamesOnReset] = useState(false);
 
+  // Firebase Server Auth & Sync state
+  const [serverUser, setServerUser] = useState<User | null>(null);
+  const [isAuthBusy, setIsAuthBusy] = useState(false);
+
   const familiesRef = useRef(families);
   familiesRef.current = families;
+  const savedDuelsRef = useRef(savedDuels);
+  savedDuelsRef.current = savedDuels;
+  const serverUserRef = useRef(serverUser);
+  serverUserRef.current = serverUser;
   const levelTimerSecRef = useRef(levelTimerSec);
   levelTimerSecRef.current = levelTimerSec;
   const duelElapsedSecRef = useRef(duelElapsedSec);
@@ -255,19 +261,49 @@ export default function App() {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(CURRENT_DUEL_STORAGE_KEY, JSON.stringify(families));
-    } catch {
-      // Ignore storage quota / private mode errors
-    }
-  }, [families]);
-
-  useEffect(() => {
-    try {
       window.localStorage.setItem(SAVED_DUELS_STORAGE_KEY, JSON.stringify(savedDuels));
     } catch {
       // Ignore storage quota / private mode errors
     }
   }, [savedDuels]);
+
+  // Listen to Firebase Auth & subscribe to server duels when signed in
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      setServerUser(user);
+    });
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!serverUser) return;
+    let migrated = false;
+
+    const unsubscribeDuels = subscribeUserDuels(
+      serverUser.uid,
+      (remoteDuels) => {
+        // One-time sync of any local session duels not yet stored on the server
+        if (!migrated) {
+          migrated = true;
+          const remoteIds = new Set(remoteDuels.map((d) => d.id));
+          const localOnly = savedDuelsRef.current.filter((d) => !remoteIds.has(d.id));
+          if (localOnly.length > 0) {
+            localOnly.forEach((localDuel) => {
+              void saveDuelToServer(serverUser.uid, localDuel).catch((err) => {
+                console.error('Migration locale vers serveur impossible:', err);
+              });
+            });
+          }
+        }
+        setSavedDuels(remoteDuels);
+      },
+      (err) => {
+        console.error('Erreur de lecture Firestore:', err);
+      },
+    );
+
+    return () => unsubscribeDuels();
+  }, [serverUser]);
 
   useEffect(() => {
     let active = true;
@@ -278,6 +314,16 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  // Pre-warm the 3D Wheel WebGL context silently after the HomeScreen first paint
+  // so clicking "Commencer la partie" is instantaneous (<16ms, zero shader stutter)
+  useEffect(() => {
+    if (isGameStagePrewarmed) return;
+    const timerId = window.setTimeout(() => {
+      setIsGameStagePrewarmed(true);
+    }, 120);
+    return () => window.clearTimeout(timerId);
+  }, [isGameStagePrewarmed]);
 
   useEffect(() => {
     return () => {
@@ -296,15 +342,60 @@ export default function App() {
   const maxFinaleCount = LEVELS[LEVELS.length - 1].targetCount; // 7
   const hasReachedLevelTarget = sequence.length >= targetCount;
   const isFinaleCompleted = currentLevel.isFinale && sequence.length >= maxFinaleCount;
+  const isAllLevelsEvaluated =
+    countEvaluatedLevels(families[0].levelResults) === LEVELS.length &&
+    countEvaluatedLevels(families[1].levelResults) === LEVELS.length;
+  const isGameFinished =
+    isFinaleCompleted ||
+    isAllLevelsEvaluated ||
+    duelElapsedSec >= DUEL_LIMIT_SECONDS ||
+    sessionTimerStatus === 'expired';
   const isAutoRespinPending = duplicateNotice !== null;
   const isWheelBusy = isSpinning || isAutoRespinPending;
   const canAdvanceLevel = hasReachedLevelTarget && !currentLevel.isFinale && !isWheelBusy;
   const canSpin = !isWheelBusy && !hasReachedLevelTarget;
-  const latestEntry = sequence.length > 0 ? sequence[sequence.length - 1] : null;
   const familyADisplayName = getDisplayFamilyName(families[0].name, 0);
   const familyBDisplayName = getDisplayFamilyName(families[1].name, 1);
 
   const levelProgressPercent = Math.min(100, Math.round((sequence.length / targetCount) * 100));
+
+  // Keep fullscreen Mudra viewer in sync if sequence shrinks or gets hidden
+  useEffect(() => {
+    if (zoomedMudraIndex === null) return;
+    if (isSequenceHidden || zoomedMudraIndex >= sequence.length) {
+      setZoomedMudraIndex(null);
+    }
+  }, [isSequenceHidden, sequence.length, zoomedMudraIndex]);
+
+  // Keyboard navigation & scroll lock for fullscreen Mudra viewer
+  useEffect(() => {
+    if (zoomedMudraIndex === null) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setZoomedMudraIndex(null);
+      } else if (event.key === 'ArrowLeft' && sequence.length > 1) {
+        event.preventDefault();
+        setZoomedMudraIndex((prev) =>
+          prev === null ? null : (prev - 1 + sequence.length) % sequence.length,
+        );
+      } else if (event.key === 'ArrowRight' && sequence.length > 1) {
+        event.preventDefault();
+        setZoomedMudraIndex((prev) =>
+          prev === null ? null : (prev + 1) % sequence.length,
+        );
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [zoomedMudraIndex, sequence.length]);
 
   // Track total duel elapsed seconds smoothly once the duel starts
   useEffect(() => {
@@ -347,6 +438,43 @@ export default function App() {
     return () => cancelAnimationFrame(rafId);
   }, [isLevelTimerEnabled, timerStatus]);
 
+  // Drift-free countdown loop for the shared 8-minute header session timer (2 min règles + 6 min jeu)
+  useEffect(() => {
+    if (sessionTimerStatus !== 'running') return;
+
+    const playPhaseThresholdMs = SESSION_PLAY_SECONDS * 1000;
+    let intervalId = 0;
+
+    const tick = () => {
+      const nextMs = Math.max(0, sessionDeadlineRef.current - performance.now());
+      setSessionRemainingMs(nextMs);
+
+      // Gentle transition chime when 2 min Règles ends and 6 min Jeu starts
+      if (nextMs <= playPhaseThresholdMs && !sessionRulesChimePlayedRef.current) {
+        sessionRulesChimePlayedRef.current = true;
+        mudraAudio.playLevelAdvance();
+      }
+
+      if (nextMs > 0 && nextMs <= 10_000) {
+        const secCeil = Math.ceil(nextMs / 1000);
+        if (secCeil !== sessionLastTickSecRef.current) {
+          sessionLastTickSecRef.current = secCeil;
+          mudraAudio.playTimerTick(secCeil <= 3);
+        }
+      }
+
+      if (nextMs <= 0) {
+        setSessionTimerStatus('expired');
+        mudraAudio.playTimerExpired();
+        window.clearInterval(intervalId);
+      }
+    };
+
+    tick();
+    intervalId = window.setInterval(tick, 200);
+    return () => window.clearInterval(intervalId);
+  }, [sessionTimerStatus]);
+
   // Sync fullscreen state with browser events
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -382,13 +510,12 @@ export default function App() {
     });
   }, []);
 
-  const handleToggleMusic = useCallback(() => {
-    mudraAudio.unlock();
-    setIsMusicPlaying((prev) => {
-      const next = !prev;
-      mudraAudio.setMusicPlaying(next);
-      return next;
-    });
+  const handleSetFallbackSynth = useCallback((playing: boolean) => {
+    if (playing) {
+      mudraAudio.unlock();
+    }
+    setIsMusicPlaying(playing);
+    mudraAudio.setMusicPlaying(playing);
   }, []);
 
   const handleToggleFullscreen = useCallback(async () => {
@@ -453,6 +580,37 @@ export default function App() {
     setRemainingMs(levelTimerSec * 1000);
     setTimerStatus('idle');
   }, [levelTimerSec]);
+
+  const handleToggleSessionTimer = useCallback(() => {
+    mudraAudio.unlock();
+    if (sessionTimerStatus === 'running') {
+      const left = Math.max(0, sessionDeadlineRef.current - performance.now());
+      setSessionRemainingMs(left);
+      setSessionTimerStatus(left <= 0 ? 'expired' : 'paused');
+      return;
+    }
+
+    const totalMs = SESSION_TOTAL_SECONDS * 1000;
+    const baseMs =
+      sessionTimerStatus === 'expired' || sessionRemainingMs <= 0
+        ? totalMs
+        : sessionRemainingMs;
+
+    if (baseMs > SESSION_PLAY_SECONDS * 1000) {
+      sessionRulesChimePlayedRef.current = false;
+    }
+    sessionLastTickSecRef.current = 0;
+    sessionDeadlineRef.current = performance.now() + baseMs;
+    setSessionRemainingMs(baseMs);
+    setSessionTimerStatus('running');
+  }, [sessionRemainingMs, sessionTimerStatus]);
+
+  const handleResetSessionTimer = useCallback(() => {
+    sessionLastTickSecRef.current = 0;
+    sessionRulesChimePlayedRef.current = false;
+    setSessionTimerStatus('idle');
+    setSessionRemainingMs(SESSION_TOTAL_SECONDS * 1000);
+  }, []);
 
   const handleToggleLevelTimer = useCallback(() => {
     mudraAudio.unlock();
@@ -561,6 +719,28 @@ export default function App() {
     setRemainingMs(levelTimerSecRef.current * 1000);
     mudraAudio.playLevelAdvance();
   }, [canAdvanceLevel, levelIndex]);
+
+  const handleSelectLevel = useCallback(
+    (nextIdx: number) => {
+      if (
+        isSpinningRef.current ||
+        duplicateNotice !== null ||
+        nextIdx < 0 ||
+        nextIdx >= LEVELS.length ||
+        nextIdx === levelIndex
+      ) {
+        return;
+      }
+      mudraAudio.unlock();
+      setLevelIndex(nextIdx);
+      // Reset the 1-minute level countdown cleanly for the chosen level
+      lastTimerTickSecRef.current = 0;
+      setTimerStatus('idle');
+      setRemainingMs(levelTimerSecRef.current * 1000);
+      mudraAudio.playLevelAdvance();
+    },
+    [duplicateNotice, levelIndex],
+  );
 
   const handleUndoLast = useCallback(() => {
     if (isSpinningRef.current || duplicateNotice !== null || sequenceRef.current.length === 0) return;
@@ -681,16 +861,62 @@ export default function App() {
     setRemainingMs(levelTimerSecRef.current * 1000);
     setDuelStartedAtMs(null);
     setDuelElapsedSec(0);
+    sessionLastTickSecRef.current = 0;
+    sessionRulesChimePlayedRef.current = false;
+    setSessionTimerStatus('idle');
+    setSessionRemainingMs(SESSION_TOTAL_SECONDS * 1000);
     setIsSequenceHidden(false);
+    setZoomedMudraIndex(null);
     setShowFinaleBanner(true);
   }, []);
 
-  const handleSaveDuel = useCallback(() => {
+  const handleSignInServer = useCallback(async () => {
+    if (isAuthBusy) return;
+    setIsAuthBusy(true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      showSaveToast('Serveur connecté · vos duels sont sauvegardés');
+    } catch (error) {
+      console.error('Connexion Google annulée ou impossible:', error);
+      showSaveToast('Connexion annulée · session locale active');
+    } finally {
+      setIsAuthBusy(false);
+    }
+  }, [isAuthBusy, showSaveToast]);
+
+  const handleSignOutServer = useCallback(async () => {
+    if (isAuthBusy) return;
+    setIsAuthBusy(true);
+    try {
+      await signOut(auth);
+      showSaveToast('Déconnecté · mode session locale');
+    } catch (error) {
+      console.error('Déconnexion impossible:', error);
+    } finally {
+      setIsAuthBusy(false);
+    }
+  }, [isAuthBusy, showSaveToast]);
+
+  const persistDuelRecord = useCallback(
+    (record: SavedDuelRecord) => {
+      setSavedDuels((prev) => [record, ...prev]);
+      const activeUser = serverUserRef.current;
+      if (activeUser) {
+        void saveDuelToServer(activeUser.uid, record).catch((err) => {
+          console.error('Sauvegarde serveur impossible:', err);
+          showSaveToast(`Duel #${record.duelNumber} gardé en session locale`);
+        });
+      }
+    },
+    [showSaveToast],
+  );
+
+  const buildCurrentDuelRecord = useCallback((): SavedDuelRecord => {
     const [f0, f1] = familiesRef.current;
     const nextNumber =
-      savedDuels.reduce((max, d) => Math.max(max, d.duelNumber), 0) + 1;
+      savedDuelsRef.current.reduce((max, d) => Math.max(max, d.duelNumber), 0) + 1;
 
-    const record: SavedDuelRecord = {
+    return {
       id: `duel-${Date.now()}-${nextNumber}`,
       duelNumber: nextNumber,
       recordedAtIso: new Date().toISOString(),
@@ -698,22 +924,29 @@ export default function App() {
         name: getDisplayFamilyName(f0.name, 0),
         outcome: f0.outcome,
         levelResults: [...f0.levelResults],
-        mudrasReached: f0.mudrasReached,
-        elapsedSec: f0.elapsedSec,
+        mudrasReached: f0.mudrasReached ?? (sequenceRef.current.length > 0 ? sequenceRef.current.length : null),
+        elapsedSec: f0.elapsedSec ?? (duelElapsedSecRef.current > 0 ? duelElapsedSecRef.current : null),
       },
       familyB: {
         name: getDisplayFamilyName(f1.name, 1),
         outcome: f1.outcome,
         levelResults: [...f1.levelResults],
-        mudrasReached: f1.mudrasReached,
-        elapsedSec: f1.elapsedSec,
+        mudrasReached: f1.mudrasReached ?? (sequenceRef.current.length > 0 ? sequenceRef.current.length : null),
+        elapsedSec: f1.elapsedSec ?? (duelElapsedSecRef.current > 0 ? duelElapsedSecRef.current : null),
       },
     };
+  }, []);
 
-    setSavedDuels((prev) => [record, ...prev]);
+  const handleSaveDuel = useCallback(() => {
+    const record = buildCurrentDuelRecord();
+    persistDuelRecord(record);
     setHasUnsavedDuelChanges(false);
-    showSaveToast(`Duel #${nextNumber} enregistré`);
-  }, [savedDuels, showSaveToast]);
+    showSaveToast(
+      serverUserRef.current
+        ? `Duel #${record.duelNumber} enregistré sur le serveur`
+        : `Duel #${record.duelNumber} enregistré dans la session`,
+    );
+  }, [buildCurrentDuelRecord, persistDuelRecord, showSaveToast]);
 
   const handleStartNewDuel = useCallback(() => {
     if (isSpinningRef.current) return;
@@ -724,42 +957,33 @@ export default function App() {
       f0.outcome !== 'pending' ||
       f1.outcome !== 'pending' ||
       countEvaluatedLevels(f0.levelResults) > 0 ||
-      countEvaluatedLevels(f1.levelResults) > 0;
+      countEvaluatedLevels(f1.levelResults) > 0 ||
+      sequenceRef.current.length > 0;
 
-    // Protect host from losing a completed matchup if they forgot to click "Enregistrer le duel"
-    if (hasUnsavedDuelChanges && hasContent) {
-      const nextNumber =
-        savedDuels.reduce((max, d) => Math.max(max, d.duelNumber), 0) + 1;
-      const autoRecord: SavedDuelRecord = {
-        id: `duel-${Date.now()}-${nextNumber}`,
-        duelNumber: nextNumber,
-        recordedAtIso: new Date().toISOString(),
-        familyA: {
-          name: getDisplayFamilyName(f0.name, 0),
-          outcome: f0.outcome,
-          levelResults: [...f0.levelResults],
-          mudrasReached: f0.mudrasReached,
-          elapsedSec: f0.elapsedSec,
-        },
-        familyB: {
-          name: getDisplayFamilyName(f1.name, 1),
-          outcome: f1.outcome,
-          levelResults: [...f1.levelResults],
-          mudrasReached: f1.mudrasReached,
-          elapsedSec: f1.elapsedSec,
-        },
-      };
-      setSavedDuels((prev) => [autoRecord, ...prev]);
-      showSaveToast(`Duel #${nextNumber} archivé · prêt pour le suivant`);
+    // Clicking "Duel suivant" always records the active duel in the game session (and server if connected)
+    if (hasUnsavedDuelChanges || hasContent) {
+      const record = buildCurrentDuelRecord();
+      persistDuelRecord(record);
+      showSaveToast(
+        serverUserRef.current
+          ? `Duel #${record.duelNumber} enregistré (serveur) · duel suivant prêt`
+          : `Duel #${record.duelNumber} enregistré dans la session · duel suivant prêt`,
+      );
     } else {
-      showSaveToast('Prêt pour un nouveau duel');
+      showSaveToast('Prêt pour le duel suivant');
     }
 
     setFamilies(createDefaultDuelFamilies());
     setHasUnsavedDuelChanges(false);
     setRewardPreview(null);
     resetWheelForNextRun();
-  }, [hasUnsavedDuelChanges, savedDuels, showSaveToast, resetWheelForNextRun]);
+  }, [
+    hasUnsavedDuelChanges,
+    buildCurrentDuelRecord,
+    persistDuelRecord,
+    showSaveToast,
+    resetWheelForNextRun,
+  ]);
 
   const handleUpdateSavedDuelOutcome = useCallback(
     (duelId: string, side: 'familyA' | 'familyB', outcome: FamilyOutcome) => {
@@ -775,6 +999,11 @@ export default function App() {
           };
         }),
       );
+      if (serverUserRef.current) {
+        void updateDuelOutcomeOnServer(duelId, side, outcome).catch((err) => {
+          console.error('Mise à jour serveur impossible:', err);
+        });
+      }
     },
     [],
   );
@@ -786,6 +1015,7 @@ export default function App() {
       targetLevelIdx: number,
       status: LevelAttemptStatus,
     ) => {
+      let updatedListForServer: LevelAttemptStatus[] | null = null;
       setSavedDuels((prev) =>
         prev.map((d) => {
           if (d.id !== duelId) return d;
@@ -793,6 +1023,7 @@ export default function App() {
           if (targetLevelIdx >= 0 && targetLevelIdx < nextResults.length) {
             nextResults[targetLevelIdx] = status;
           }
+          updatedListForServer = nextResults;
           return {
             ...d,
             [side]: {
@@ -802,16 +1033,34 @@ export default function App() {
           };
         }),
       );
+      if (serverUserRef.current && updatedListForServer) {
+        void updateDuelLevelResultsOnServer(duelId, side, updatedListForServer).catch((err) => {
+          console.error('Mise à jour niveaux serveur impossible:', err);
+        });
+      }
     },
     [],
   );
 
   const handleDeleteSavedDuel = useCallback((duelId: string) => {
     setSavedDuels((prev) => prev.filter((d) => d.id !== duelId));
+    if (serverUserRef.current) {
+      void deleteDuelOnServer(duelId).catch((err) => {
+        console.error('Suppression serveur impossible:', err);
+      });
+    }
   }, []);
 
   const handleClearAllSavedDuels = useCallback(() => {
+    const idsToRemove = savedDuelsRef.current.map((d) => d.id);
     setSavedDuels([]);
+    if (serverUserRef.current) {
+      idsToRemove.forEach((id) => {
+        void deleteDuelOnServer(id).catch((err) => {
+          console.error('Suppression serveur impossible:', err);
+        });
+      });
+    }
   }, []);
 
   const handleConfirmReset = useCallback(() => {
@@ -841,6 +1090,32 @@ export default function App() {
     setIsResetModalOpen(false);
   }, [resetWheelForNextRun, clearFamilyNamesOnReset]);
 
+  const handleReturnToHome = useCallback(() => {
+    if (isSpinningRef.current || duplicateNotice !== null) return;
+    setZoomedMudraIndex(null);
+    setActiveScreen('home');
+    window.scrollTo(0, 0);
+  }, [duplicateNotice]);
+
+  const handleEnterGame = useCallback(() => {
+    mudraAudio.unlock();
+    setIsGameStagePrewarmed(true);
+    setActiveScreen('game');
+    window.scrollTo(0, 0);
+  }, []);
+
+  const handleStartNewFamiliesFromHome = useCallback(() => {
+    mudraAudio.unlock();
+    handleStartNewDuel();
+  }, [handleStartNewDuel]);
+
+  const hasActiveGame =
+    sequence.length > 0 ||
+    families[0].outcome !== 'pending' ||
+    families[1].outcome !== 'pending' ||
+    countEvaluatedLevels(families[0].levelResults) > 0 ||
+    countEvaluatedLevels(families[1].levelResults) > 0;
+
   const isFullscreenActive = isFullscreen || isExpandedView;
 
   return (
@@ -854,45 +1129,67 @@ export default function App() {
       }}
     >
       {/* Celebratory red & gold lotus petals animation for Finale victory */}
-      <CelebrationOverlay active={isFinaleCompleted && showFinaleBanner} />
+      <CelebrationOverlay active={activeScreen === 'game' && isFinaleCompleted && showFinaleBanner} />
 
       {/* Top Bar */}
       <header className="w-full border-b border-[#F5B324]/35 bg-[#3B050A]/90 backdrop-blur-xs">
-        <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-3 min-w-0">
-            <LotusEmblem className="h-9 w-9 shrink-0" />
-            <h1 className="truncate text-xl font-extrabold tracking-tight text-[#FFF8EA] sm:text-2xl">
-              Le défi des Mudras
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
-            {/* Traditional Indian Background Music Toggle */}
-            <button
-              type="button"
-              onClick={handleToggleMusic}
-              aria-pressed={isMusicPlaying}
-              aria-label={
-                isMusicPlaying
-                  ? 'Couper la musique indienne'
-                  : 'Lancer la musique indienne'
-              }
-              title={
-                isMusicPlaying
-                  ? 'Couper la musique indienne'
-                  : 'Lancer la musique indienne'
-              }
-              className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border px-3 sm:px-3.5 py-2 text-sm font-bold shadow-xs transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0 ${
-                isMusicPlaying
-                  ? 'border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] text-[#2B0508] hover:from-[#FCD34D] hover:to-[#EAB308]'
-                  : 'border-[#F5B324]/45 bg-[#5E0A12] text-[#FFF8EA] hover:bg-[#7A1019] hover:border-[#FCD34D]'
-              }`}
-            >
-              <Music className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <span className="hidden md:inline">
-                {isMusicPlaying ? 'Musique active' : 'Musique indienne'}
+        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-2.5 sm:gap-3 px-4 py-2.5 sm:px-6 lg:px-8">
+          <button
+            type="button"
+            onClick={activeScreen === 'game' ? handleReturnToHome : undefined}
+            disabled={activeScreen === 'game' && isWheelBusy}
+            aria-label={
+              activeScreen === 'game'
+                ? "Revenir à l'écran d'accueil"
+                : 'Le défi des mudras'
+            }
+            className={`flex items-center gap-2.5 min-w-0 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+              activeScreen === 'game'
+                ? 'cursor-pointer transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60'
+                : 'cursor-default'
+            }`}
+          >
+            <LotusEmblem className="h-8 w-8 sm:h-9 sm:w-9 shrink-0" />
+            {activeScreen === 'game' ? (
+              <h1 className="truncate text-lg font-extrabold tracking-tight text-[#FFF8EA] sm:text-xl xl:text-2xl">
+                Le défi des mudras
+              </h1>
+            ) : (
+              <span className="truncate text-lg font-extrabold tracking-tight text-[#FFF8EA] sm:text-xl xl:text-2xl">
+                Le défi des mudras
               </span>
-            </button>
+            )}
+          </button>
+
+          {/* Persistent 8-Minute Session Timer (2 min Règles + 6 min Jeu) */}
+          <SessionTimerHeader
+            remainingMs={sessionRemainingMs}
+            status={sessionTimerStatus}
+            onTogglePlayPause={handleToggleSessionTimer}
+            onReset={handleResetSessionTimer}
+          />
+
+          <div className="flex items-center gap-2 shrink-0">
+            {/* One-Click Return to Welcome Screen Button (when in game) */}
+            {activeScreen === 'game' && (
+              <button
+                type="button"
+                onClick={handleReturnToHome}
+                disabled={isWheelBusy}
+                aria-label="Revenir à l'écran d'accueil des joueurs"
+                title="Revenir à l'écran d'accueil"
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-3 sm:px-3.5 py-2 text-sm font-extrabold text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
+              >
+                <Home className="h-4 w-4 shrink-0 text-[#FEF08A]" aria-hidden="true" />
+                <span className="hidden sm:inline">Accueil</span>
+              </button>
+            )}
+
+            {/* Compact Inline Music Player (Previous / Play-Pause / Next, zero popup) */}
+            <InlineMusicPlayer
+              isFallbackSynthPlaying={isMusicPlaying}
+              onSetFallbackSynth={handleSetFallbackSynth}
+            />
 
             {/* Wheel Sound Effects Toggle */}
             <button
@@ -914,59 +1211,71 @@ export default function App() {
             <button
               type="button"
               onClick={handleToggleFullscreen}
-              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3 sm:px-3.5 py-2 text-sm font-bold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
+              aria-label={isFullscreenActive ? 'Quitter le plein écran' : 'Plein écran'}
+              title={isFullscreenActive ? 'Quitter le plein écran' : 'Plein écran'}
+              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3 py-2 text-sm font-bold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
             >
               {isFullscreenActive ? (
                 <Minimize2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
               ) : (
                 <Maximize2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
               )}
-              <span className="hidden sm:inline">
-                {isFullscreenActive ? 'Quitter le plein écran' : 'Plein écran'}
+              <span className="hidden xl:inline">
+                {isFullscreenActive ? 'Quitter' : 'Plein écran'}
               </span>
             </button>
 
-            {/* New Game Button */}
-            <button
-              type="button"
-              onClick={() => setIsResetModalOpen(true)}
-              disabled={isWheelBusy}
-              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/55 bg-[#7F1119] px-3 sm:px-3.5 py-2 text-sm font-bold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#9E1620] hover:border-[#FDE68A] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
-            >
-              <RotateCcw className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-              <span className="hidden sm:inline">Nouvelle partie</span>
-              <span className="sm:hidden">Rejouer</span>
-            </button>
+            {/* New Game Button (Game view) or Enter Wheel CTA (Home view) */}
+            {activeScreen === 'game' ? (
+              <button
+                type="button"
+                onClick={() => setIsResetModalOpen(true)}
+                disabled={isWheelBusy}
+                title="Nouvelle partie"
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/55 bg-[#7F1119] px-3 py-2 text-sm font-bold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#9E1620] hover:border-[#FDE68A] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
+              >
+                <RotateCcw className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                <span className="hidden lg:inline">Nouvelle partie</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleEnterGame}
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/85 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-3.5 sm:px-4 py-2 text-sm font-extrabold text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap shrink-0"
+              >
+                <Play className="h-4 w-4 shrink-0 text-[#FEF08A]" aria-hidden="true" />
+                <span>{hasActiveGame ? 'Reprendre' : 'Jouer'}</span>
+              </button>
+            )}
           </div>
         </div>
       </header>
 
-      {/* Main Game Stage */}
-      <main className="mx-auto flex w-full max-w-[1380px] flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:grid lg:grid-cols-12 lg:items-start lg:gap-x-8 lg:gap-y-6 lg:px-8 lg:py-6">
-        {/* TOP FULL-WIDTH DUEL BAR: 2 Families Playing Simultaneously for Golden Turtle Clues */}
-        <div className="w-full lg:col-span-12">
-          <FamilyDuelBar
-            families={families}
-            currentLevelIndex={levelIndex}
-            currentLevelLabel={currentLevel.label}
-            savedDuelsCount={savedDuels.length}
-            saveFeedback={saveFeedback}
-            onRenameFamily={handleRenameFamily}
-            onSetFamilyLevelResult={handleSetFamilyLevelResult}
-            onSetFamilyOutcome={handleSetFamilyOutcome}
-            onPreviewOutcome={handlePreviewOutcome}
-            onSaveDuel={handleSaveDuel}
-            onStartNewDuel={handleStartNewDuel}
-            onOpenHistory={() => setIsHistoryOpen(true)}
-            rewardPreview={rewardPreview}
-            onCloseRewardPreview={() => setRewardPreview(null)}
-          />
-        </div>
+      {/* Active Screen: Players Welcome Screen + Pre-warmed Instant Game Stage */}
+      {activeScreen === 'home' && (
+        <HomeScreen
+          families={families}
+          onRenameFamily={handleRenameFamily}
+          mudraSprites={mudraSprites}
+          hasActiveGame={hasActiveGame}
+          savedDuelsCount={savedDuels.length}
+          onEnterGame={handleEnterGame}
+          onStartNewFamilies={handleStartNewFamiliesFromHome}
+          onOpenHistory={() => setIsHistoryOpen(true)}
+        />
+      )}
 
-        {/* LEFT / CENTER HERO STAGE: Visual 1-Minute Level Countdown, Grand 3D Wheel & Primary Action */}
+      {(isGameStagePrewarmed || activeScreen === 'game') && (
+      <main
+        aria-hidden={activeScreen !== 'game'}
+        className={`mx-auto w-full max-w-[1600px] flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:items-start lg:gap-x-8 lg:gap-y-6 lg:px-8 lg:py-5 ${
+          activeScreen === 'game' ? 'flex lg:grid lg:grid-cols-12' : 'hidden'
+        }`}
+      >
+        {/* LEFT COLUMN: Grand 3D Wheel, 1-Minute Level Countdown & Primary Spin Action */}
         <section
           aria-label="Roue des Mudras"
-          className="flex flex-col items-center justify-center lg:col-span-7"
+          className="flex flex-col items-center justify-center lg:col-span-7 lg:sticky lg:top-4"
         >
           {/* 1-Minute Per-Level Visual Countdown + 8-Minute Duel Elapsed Tracker */}
           {isLevelTimerEnabled && (
@@ -984,10 +1293,10 @@ export default function App() {
             />
           )}
 
-          {/* Warm royal gold aura behind the 3D wheel */}
+          {/* Warm royal gold aura behind the giant 3D wheel */}
           <div className="relative flex w-full flex-col items-center">
             <div
-              className="pointer-events-none absolute inset-0 m-auto h-[88%] w-[88%] max-w-[560px] rounded-full opacity-80"
+              className="pointer-events-none absolute inset-0 m-auto h-[90%] w-[90%] max-w-[740px] rounded-full opacity-80"
               style={{
                 background:
                   'radial-gradient(circle, rgba(252,211,77,0.34) 0%, rgba(245,179,36,0.16) 44%, rgba(139,17,26,0) 74%)',
@@ -1014,7 +1323,7 @@ export default function App() {
             <div
               role="status"
               aria-live="assertive"
-              className="animate-lotus-reveal mt-3 flex w-full max-w-[540px] items-center justify-center gap-3 rounded-2xl border-2 border-[#FCD34D] bg-[#2D0408]/95 px-5 py-3.5 text-center shadow-lg shadow-black/40"
+              className="animate-lotus-reveal mt-3 flex w-full max-w-[620px] items-center justify-center gap-3 rounded-2xl border-2 border-[#FCD34D] bg-[#2D0408]/95 px-5 py-3.5 text-center shadow-lg shadow-black/40"
             >
               <RefreshCw className="h-5 w-5 shrink-0 animate-spin text-[#FCD34D]" aria-hidden="true" />
               <div className="text-left sm:text-center">
@@ -1031,7 +1340,7 @@ export default function App() {
           )}
 
           {/* Primary Red Action CTA & Level Advance CTA directly beneath the wheel */}
-          <div className="mt-4 flex w-full max-w-[540px] flex-col items-center gap-3">
+          <div className="mt-3 flex w-full max-w-[620px] flex-col items-center gap-2.5">
             <button
               type="button"
               onClick={handleSpin}
@@ -1090,11 +1399,18 @@ export default function App() {
           </div>
         </section>
 
-        {/* RIGHT COLUMN: Progression, Latest Result & Memorization Sequence */}
+        {/* RIGHT COLUMN: All Info (Famille 1 & 2, Les niveaux, Enchaînements) */}
         <section
-          aria-label="Progression et séquence à mémoriser"
-          className="flex flex-col gap-5 lg:col-span-5"
+          aria-label="Familles, niveaux et enchaînements"
+          className="flex flex-col gap-4 lg:col-span-5"
         >
+          {/* 1. Famille n°1 CONTRE Famille n°2 + validation par niveau */}
+          <FamilyDuelBar
+            families={families}
+            currentLevelIndex={levelIndex}
+            currentLevelLabel={currentLevel.label}
+            onSetFamilyLevelResult={handleSetFamilyLevelResult}
+          />
           {/* Finale Victory Banner */}
           {isFinaleCompleted && (
             <div
@@ -1189,34 +1505,54 @@ export default function App() {
               />
             </div>
 
-            {/* 6-step milestone track */}
-            <div className="mt-3.5 grid grid-cols-6 gap-1.5 text-center">
-              {LEVELS.map((lvl) => {
-                const isDone =
-                  lvl.index < levelIndex ||
-                  (lvl.index === levelIndex && sequence.length >= lvl.targetCount);
-                const isCurrent = lvl.index === levelIndex;
+            {/* 6-step selectable level selector */}
+            <div className="mt-3.5">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#F3D9A4]/75">
+                  Choisir un niveau
+                </span>
+                <span className="text-[11px] font-semibold text-[#FCD34D]/80 tabular-nums">
+                  {targetCount} mudras
+                </span>
+              </div>
+              <div
+                className="grid grid-cols-6 gap-1.5 text-center"
+                role="group"
+                aria-label="Sélectionner le niveau"
+              >
+                {LEVELS.map((lvl) => {
+                  const isDone =
+                    lvl.index < levelIndex ||
+                    (lvl.index === levelIndex && sequence.length >= lvl.targetCount);
+                  const isCurrent = lvl.index === levelIndex;
 
-                return (
-                  <div
-                    key={lvl.index}
-                    className={`rounded-lg border px-1 py-1.5 transition-colors ${
-                      isCurrent
-                        ? 'border-[#FCD34D]/80 bg-[#B91C1C]/50 text-[#FEF3C7]'
-                        : isDone
-                          ? 'border-[#F5B324]/45 bg-[#F5B324]/18 text-[#FCD34D]'
-                          : 'border-[#F5B324]/15 bg-[#260306]/70 text-[#F3D9A4]/50'
-                    }`}
-                  >
-                    <div className="text-[11px] font-bold leading-tight truncate">
-                      {lvl.shortLabel}
-                    </div>
-                    <div className="mt-0.5 text-xs font-extrabold tabular-nums">
-                      {lvl.targetCount}
-                    </div>
-                  </div>
-                );
-              })}
+                  return (
+                    <button
+                      key={lvl.index}
+                      type="button"
+                      onClick={() => handleSelectLevel(lvl.index)}
+                      disabled={isWheelBusy}
+                      aria-pressed={isCurrent}
+                      aria-label={`Sélectionner ${lvl.label} (${lvl.targetCount} mudras)`}
+                      title={`${lvl.label} · ${lvl.targetCount} mudras`}
+                      className={`min-h-[50px] rounded-lg border px-1 py-1.5 transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                        isCurrent
+                          ? 'border-[#FCD34D] bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-[#FFF8EA] shadow-sm shadow-black/30 ring-1 ring-[#FCD34D]/50'
+                          : isDone
+                            ? 'border-[#F5B324]/55 bg-[#F5B324]/18 text-[#FCD34D] hover:border-[#FCD34D] hover:bg-[#7F1119]/80 hover:text-[#FFF8EA]'
+                            : 'border-[#F5B324]/25 bg-[#260306]/80 text-[#F3D9A4]/80 hover:border-[#FCD34D]/75 hover:bg-[#5E0A12] hover:text-[#FFF8EA]'
+                      }`}
+                    >
+                      <div className="text-[11px] font-bold leading-tight truncate">
+                        {lvl.shortLabel}
+                      </div>
+                      <div className="mt-0.5 text-xs font-extrabold tabular-nums">
+                        {lvl.targetCount}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             {/* 1-Minute Per-Level Chrono Toggle & Duration Adjuster */}
@@ -1278,152 +1614,103 @@ export default function App() {
             </div>
           </div>
 
-          {/* 2. Latest Drawn Mudra Spotlight */}
+          {/* 2. Enchaînements List & Controls (simplified — replaces redundant spotlight card) */}
           <div
             aria-live="polite"
-            className="rounded-2xl border border-[#F5B324]/35 bg-[#3B050A]/88 p-5 shadow-md shadow-black/25 backdrop-blur-xs"
+            className="flex flex-col rounded-2xl border border-[#F5B324]/35 bg-[#3B050A]/88 p-5 shadow-md shadow-black/25 backdrop-blur-xs"
           >
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-bold text-[#F3D9A4]/85">
-                Dernier mudra obtenu
-              </h2>
-              {latestEntry && !isSequenceHidden && (
-                <span className="text-xs font-semibold text-[#FCD34D]/85 tabular-nums">
-                  Tirage n°{sequence.length}
-                </span>
-              )}
-            </div>
-
-            <div className="mt-3 flex min-h-[84px] items-center justify-center rounded-xl border border-[#F5B324]/25 bg-[#240306]/80 px-4 py-3 text-center">
-              {duplicateNotice ? (
-                <div className="animate-lotus-reveal flex flex-col items-center gap-1">
-                  <span className="text-base sm:text-lg font-extrabold uppercase tracking-wide text-[#FCD34D]">
-                    DOUBLON : {duplicateNotice.mudra.name.toUpperCase()}
-                  </span>
-                  <span className="text-xs sm:text-sm font-semibold text-[#FFF8EA]/85">
-                    {duplicateNotice.phase === 'countdown'
-                      ? 'Deux fois de suite ! La roue se relance toute seule…'
-                      : 'Nouveau tirage automatique en cours…'}
-                  </span>
-                </div>
-              ) : isSpinning ? (
-                <p className="text-lg font-bold text-[#FCD34D]">
-                  Tirage en cours…
-                </p>
-              ) : !latestEntry ? (
-                <p className="text-sm sm:text-base font-medium text-[#F3D9A4]/75">
-                  Lancez la roue au doigt ou appuyez sur « TOURNER LA ROUE » pour commencer.
-                </p>
-              ) : isSequenceHidden ? (
-                <div className="flex flex-col items-center">
-                  <span
-                    className="text-4xl font-extrabold tracking-widest text-[#FCD34D]/75"
-                    aria-label="Résultat masqué"
-                  >
-                    ?
-                  </span>
-                  <span className="mt-1 text-xs font-medium text-[#F3D9A4]/75">
-                    Séquence cachée — à vous de reproduire de mémoire
-                  </span>
-                </div>
-              ) : (
-                <div
-                  key={latestEntry.uid}
-                  className="animate-lotus-reveal flex items-center justify-center gap-4"
-                >
-                  {mudraSprites[latestEntry.mudra.id] ? (
-                    <div
-                      className="flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl border-2 bg-[#FFF8EA] p-1.5 shadow-sm"
-                      style={{ borderColor: '#F5B324' }}
-                    >
-                      <img
-                        src={mudraSprites[latestEntry.mudra.id].dataUrl}
-                        alt={`Geste du mudra ${latestEntry.mudra.name.toUpperCase()}`}
-                        className="h-full w-full object-contain"
-                      />
-                    </div>
-                  ) : (
-                    <span
-                      className="h-4 w-4 shrink-0 rounded-full border border-[#FDE68A]/50"
-                      style={{ backgroundColor: latestEntry.mudra.colorHex }}
-                      aria-hidden="true"
-                    />
-                  )}
-                  <div className="text-left">
-                    <span className="block text-2xl sm:text-3xl font-extrabold uppercase tracking-wide text-[#FFF8EA]">
-                      {latestEntry.mudra.name.toUpperCase()}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* 3. Memorization Sequence List & Game Controls */}
-          <div className="flex flex-col rounded-2xl border border-[#F5B324]/35 bg-[#3B050A]/88 p-5 shadow-md shadow-black/25 backdrop-blur-xs">
             <div className="flex items-baseline justify-between gap-2">
               <h2 className="text-lg font-extrabold text-[#FFF8EA]">
-                Votre séquence
+                Enchaînements
               </h2>
               <span className="text-xs font-semibold text-[#F3D9A4]/80 tabular-nums">
-                {sequence.length === 0
-                  ? 'Aucun mudra tiré'
-                  : `${sequence.length} ${sequence.length > 1 ? 'étapes' : 'étape'}`}
+                {duplicateNotice
+                  ? `Doublon : ${duplicateNotice.mudra.name.toUpperCase()}`
+                  : isSpinning
+                    ? 'Tirage en cours…'
+                    : sequence.length === 0
+                      ? 'Aucun mudra tiré'
+                      : `${sequence.length} ${sequence.length > 1 ? 'étapes' : 'étape'}`}
               </span>
             </div>
 
-            {/* Ordered Sequence List */}
+            {/* Ordered Enchaînements List */}
             {sequence.length === 0 ? (
               <div className="mt-3 rounded-xl border border-dashed border-[#F5B324]/30 bg-[#240306]/60 px-4 py-6 text-center text-sm text-[#F3D9A4]/75">
-                Les mudras tirés apparaîtront ici dans l’ordre, numérotés de 1 à{' '}
-                {targetCount}.
+                {isSpinning
+                  ? 'La roue tourne…'
+                  : `Les mudras tirés apparaîtront ici dans l’ordre, numérotés de 1 à ${targetCount}.`}
               </div>
             ) : (
               <ol className="mt-3 flex flex-col gap-2">
                 {sequence.map((entry, idx) => {
                   const isNewest = idx === sequence.length - 1;
-                  return (
-                    <li
-                      key={entry.uid}
-                      className={`animate-lotus-reveal flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 transition-colors ${
-                        isNewest && !isSequenceHidden
-                          ? 'border-[#FCD34D]/75 bg-[#5E0A12]/90'
-                          : 'border-[#F5B324]/25 bg-[#240306]/75'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#FCD34D]/55 bg-[#991B1B] text-sm font-extrabold text-[#FFF8EA] tabular-nums">
-                          {idx + 1}
-                        </span>
-                        {!isSequenceHidden && mudraSprites[entry.mudra.id] && (
-                          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#F5B324]/80 bg-[#FFF8EA] p-1">
-                            <img
-                              src={mudraSprites[entry.mudra.id].dataUrl}
-                              alt={`Geste ${entry.mudra.name.toUpperCase()}`}
-                              className="h-full w-full object-contain"
-                            />
-                          </div>
-                        )}
+                  if (isSequenceHidden) {
+                    return (
+                      <li
+                        key={entry.uid}
+                        className="animate-lotus-reveal flex items-center justify-between gap-3 rounded-xl border border-[#F5B324]/25 bg-[#240306]/75 px-3.5 py-2.5"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#FCD34D]/55 bg-[#991B1B] text-sm font-extrabold text-[#FFF8EA] tabular-nums">
+                            {idx + 1}
+                          </span>
+                          <span className="truncate text-base sm:text-lg font-extrabold uppercase tracking-widest text-[#FCD34D]/60">
+                            ?
+                          </span>
+                        </div>
                         <span
-                          className={`truncate text-base sm:text-lg font-extrabold uppercase tracking-wide ${
-                            isSequenceHidden
-                              ? 'tracking-widest text-[#FCD34D]/60'
-                              : 'text-[#FFF8EA]'
-                          }`}
-                        >
-                          {isSequenceHidden ? '?' : entry.mudra.name.toUpperCase()}
-                        </span>
-                      </div>
+                          className="h-3.5 w-3.5 shrink-0 rounded-full border border-[#FDE68A]/50"
+                          style={{ backgroundColor: 'rgba(245, 179, 36, 0.22)' }}
+                          aria-hidden="true"
+                        />
+                      </li>
+                    );
+                  }
 
-                      <span
-                        className="h-3.5 w-3.5 shrink-0 rounded-full border border-[#FDE68A]/50"
-                        style={{
-                          backgroundColor: isSequenceHidden
-                            ? 'rgba(245, 179, 36, 0.22)'
-                            : entry.mudra.colorHex,
-                        }}
-                        aria-hidden="true"
-                      />
+                  return (
+                    <li key={entry.uid} className="animate-lotus-reveal">
+                      <button
+                        type="button"
+                        onClick={() => setZoomedMudraIndex(idx)}
+                        aria-label={`Agrandir le mudra ${entry.mudra.name.toUpperCase()} en plein écran`}
+                        title="Cliquer pour agrandir en plein écran"
+                        className={`group flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                          isNewest
+                            ? 'border-[#FCD34D]/80 bg-[#5E0A12]/90 hover:border-[#FDE68A] hover:bg-[#7A1019]'
+                            : 'border-[#F5B324]/25 bg-[#240306]/75 hover:border-[#FCD34D]/75 hover:bg-[#4A070D]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#FCD34D]/55 bg-[#991B1B] text-sm font-extrabold text-[#FFF8EA] tabular-nums">
+                            {idx + 1}
+                          </span>
+                          {mudraSprites[entry.mudra.id] && (
+                            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[#F5B324]/80 bg-[#FFF8EA] p-1 transition-transform duration-150 group-hover:scale-105 group-hover:border-[#FCD34D]">
+                              <img
+                                src={mudraSprites[entry.mudra.id].dataUrl}
+                                alt={`Geste ${entry.mudra.name.toUpperCase()}`}
+                                className="h-full w-full object-contain"
+                              />
+                            </div>
+                          )}
+                          <span className="truncate text-base sm:text-lg font-extrabold uppercase tracking-wide text-[#FFF8EA]">
+                            {entry.mudra.name.toUpperCase()}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2.5 shrink-0">
+                          <Maximize2
+                            className="h-4 w-4 text-[#FCD34D]/70 transition-colors group-hover:text-[#FCD34D]"
+                            aria-hidden="true"
+                          />
+                          <span
+                            className="h-3.5 w-3.5 shrink-0 rounded-full border border-[#FDE68A]/50"
+                            style={{ backgroundColor: entry.mudra.colorHex }}
+                            aria-hidden="true"
+                          />
+                        </div>
+                      </button>
                     </li>
                   );
                 })}
@@ -1444,12 +1731,12 @@ export default function App() {
                 {isSequenceHidden ? (
                   <>
                     <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
-                    <span>Afficher la séquence</span>
+                    <span>Afficher</span>
                   </>
                 ) : (
                   <>
                     <EyeOff className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                    <span>Cacher la séquence</span>
+                    <span>Cacher</span>
                   </>
                 )}
               </button>
@@ -1461,12 +1748,35 @@ export default function App() {
                 className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-4 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
               >
                 <Undo2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                <span>Annuler le dernier tirage</span>
+                <span>Annuler le dernier</span>
               </button>
             </div>
           </div>
         </section>
+
+        {/* BOTTOM FULL-WIDTH RECORDING BAR: Tout en bas quand la partie est finie + Duel suivant */}
+        <div className="w-full lg:col-span-12">
+          <DuelFinishFooter
+            families={families}
+            isGameFinished={isGameFinished}
+            savedDuelsCount={savedDuels.length}
+            saveFeedback={saveFeedback}
+            serverUserEmail={serverUser?.email ?? null}
+            isAuthBusy={isAuthBusy}
+            onSignInServer={() => void handleSignInServer()}
+            onSignOutServer={() => void handleSignOutServer()}
+            onSetFamilyOutcome={handleSetFamilyOutcome}
+            onPreviewOutcome={handlePreviewOutcome}
+            onSaveDuel={handleSaveDuel}
+            onStartNewDuel={handleStartNewDuel}
+            onReturnHome={handleReturnToHome}
+            onOpenHistory={() => setIsHistoryOpen(true)}
+            rewardPreview={rewardPreview}
+            onCloseRewardPreview={() => setRewardPreview(null)}
+          />
+        </div>
       </main>
+      )}
 
       {/* New Game Confirmation Modal (never uses window.confirm) */}
       {isResetModalOpen && (
@@ -1546,6 +1856,115 @@ export default function App() {
         onDeleteDuel={handleDeleteSavedDuel}
         onClearAllDuels={handleClearAllSavedDuels}
       />
+
+      {/* Fullscreen Mudra Lightbox ("Enchaînements" click-to-zoom) */}
+      {zoomedMudraIndex !== null && !isSequenceHidden && sequence[zoomedMudraIndex] && (() => {
+        const zoomedEntry = sequence[zoomedMudraIndex];
+        const zoomedSprite = mudraSprites[zoomedEntry.mudra.id];
+        return (
+          <div
+            className="fixed inset-0 z-50 flex flex-col justify-between bg-[#2B0408]/98 px-4 py-4 sm:px-8 sm:py-6 backdrop-blur-md"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="zoomed-mudra-title"
+          >
+            {/* Top Bar: Prominent "Retour" button + step metadata */}
+            <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4">
+              <button
+                type="button"
+                onClick={() => setZoomedMudraIndex(null)}
+                className="inline-flex min-h-[50px] items-center justify-center gap-2.5 rounded-xl border-2 border-[#FCD34D] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-base font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/40 transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+              >
+                <ArrowLeft className="h-5 w-5 shrink-0" aria-hidden="true" />
+                <span>Retour</span>
+              </button>
+
+              <div className="text-right tabular-nums">
+                <p className="text-sm sm:text-base font-extrabold text-[#FCD34D]">
+                  Étape {zoomedMudraIndex + 1} / {sequence.length}
+                </p>
+                <p className="text-xs font-semibold text-[#F3D9A4]/75">
+                  {currentLevel.label}
+                </p>
+              </div>
+            </div>
+
+            {/* Center Stage: Giant Mudra Hand Illustration + Name */}
+            <div className="mx-auto my-4 flex w-full max-w-4xl flex-1 flex-col items-center justify-center gap-5 sm:gap-7 min-h-0">
+              <div className="animate-lotus-reveal flex aspect-square max-h-[56vh] w-full max-w-[min(82vw,520px)] items-center justify-center rounded-3xl border-4 border-[#F5B324] bg-[#FFF8EA] p-6 sm:p-10 shadow-2xl shadow-black/50">
+                {zoomedSprite ? (
+                  <img
+                    src={zoomedSprite.dataUrl}
+                    alt={`Geste ${zoomedEntry.mudra.name.toUpperCase()}`}
+                    className="h-full w-full object-contain"
+                  />
+                ) : (
+                  <Hand
+                    className="h-32 w-32 text-[#991B1B]"
+                    aria-hidden="true"
+                  />
+                )}
+              </div>
+
+              <div className="flex flex-col items-center text-center">
+                <h2
+                  id="zoomed-mudra-title"
+                  className="text-3xl sm:text-5xl font-extrabold uppercase tracking-wider text-[#FFF8EA]"
+                >
+                  {zoomedEntry.mudra.name.toUpperCase()}
+                </h2>
+                <span
+                  className="mt-3 h-1.5 w-24 rounded-full"
+                  style={{ backgroundColor: zoomedEntry.mudra.colorHex }}
+                  aria-hidden="true"
+                />
+              </div>
+            </div>
+
+            {/* Bottom Controls: Prev / Next + Retour à la roue */}
+            <div className="mx-auto flex w-full max-w-3xl items-center justify-center gap-3">
+              {sequence.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setZoomedMudraIndex(
+                      (zoomedMudraIndex - 1 + sequence.length) % sequence.length,
+                    )
+                  }
+                  aria-label="Mudra précédent"
+                  className="inline-flex min-h-[48px] items-center justify-center gap-1.5 rounded-xl border border-[#F5B324]/50 bg-[#5E0A12] px-4 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+                >
+                  <ChevronLeft className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                  <span className="hidden sm:inline">Précédent</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setZoomedMudraIndex(null)}
+                className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-6 py-2.5 text-sm sm:text-base font-extrabold uppercase tracking-wide text-white shadow-md transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+              >
+                <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Retour à la roue</span>
+              </button>
+
+              {sequence.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setZoomedMudraIndex((zoomedMudraIndex + 1) % sequence.length)
+                  }
+                  aria-label="Mudra suivant"
+                  className="inline-flex min-h-[48px] items-center justify-center gap-1.5 rounded-xl border border-[#F5B324]/50 bg-[#5E0A12] px-4 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+                >
+                  <span className="hidden sm:inline">Suivant</span>
+                  <ChevronRight className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

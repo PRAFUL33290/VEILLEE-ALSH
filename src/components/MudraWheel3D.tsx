@@ -978,10 +978,10 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       roomEnv.dispose();
       pmremGenerator.dispose();
 
-      // Perspective camera framing the entire wheel + top lotus pointer cleanly
-      const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 40);
-      camera.position.set(0, 0.08, 10.6);
-      camera.lookAt(0, 0.04, 0);
+      // Perspective camera framing the entire wheel + top lotus pointer tightly without clipping
+      const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 40);
+      camera.position.set(0, 0.1, 10.3);
+      camera.lookAt(0, 0.08, 0);
 
       // Calibrated 3-point studio lighting: front face hits exact ~1.0 true pigment luminance (zero washout)
       const hemiLight = new THREE.HemisphereLight(0xfff4d6, 0x7a1c22, 0.58);
@@ -1323,11 +1323,14 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       pivotJewel.position.set(0, 0.01, 0.145);
       pointerPivot.add(pivotJewel);
 
-      // Resize handling
+      // Resize handling (skip 0x0 passes while game screen is hidden; draw instantly on reveal)
       const handleResize = () => {
         if (!container) return;
-        const w = Math.max(container.clientWidth, 1);
-        const h = Math.max(container.clientHeight, 1);
+        const rawW = container.clientWidth;
+        const rawH = container.clientHeight;
+        if (rawW === 0 || rawH === 0) return;
+        const w = Math.max(rawW, 1);
+        const h = Math.max(rawH, 1);
         camera.aspect = w / h;
         const minAxis = Math.min(w, h);
         const aspectScale = w < h ? h / w : 1;
@@ -1339,6 +1342,8 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       };
 
       if (!isSoftwareGl) {
+        // Warm GPU shaders & shadow map once even if container starts hidden on HomeScreen
+        renderer.setSize(512, 512, false);
         renderer.compile(scene, camera);
       }
 
@@ -1578,7 +1583,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
             onWheelClick();
           }
         }}
-        className={`relative flex aspect-square w-full max-w-[600px] items-center justify-center mx-auto rounded-full touch-none select-none outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/60 ${
+        className={`relative flex aspect-square w-full max-w-[760px] items-center justify-center mx-auto rounded-full touch-none select-none outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/60 ${
           isDragging ? 'cursor-grabbing' : 'cursor-grab'
         }`}
       >

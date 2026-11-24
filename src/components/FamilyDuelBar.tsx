@@ -4,11 +4,15 @@ import {
   BookmarkCheck,
   Check,
   ClipboardList,
+  Cloud,
+  CloudOff,
   Eye,
+  Home,
   Image as ImageIcon,
   Lock,
+  LogIn,
+  LogOut,
   Minus,
-  Pencil,
   PlusCircle,
   Swords,
   Users,
@@ -85,30 +89,9 @@ export interface TortueRewardPreview {
   elapsedSec: number | null;
 }
 
-interface FamilyDuelBarProps {
-  families: [DuelFamilySlot, DuelFamilySlot];
-  currentLevelIndex: number;
-  currentLevelLabel: string;
-  savedDuelsCount: number;
-  saveFeedback: string | null;
-  onRenameFamily: (id: 0 | 1, name: string) => void;
-  onSetFamilyLevelResult: (
-    id: 0 | 1,
-    levelIdx: number,
-    status: LevelAttemptStatus,
-  ) => void;
-  onSetFamilyOutcome: (id: 0 | 1, outcome: FamilyOutcome) => void;
-  onPreviewOutcome: (id: 0 | 1) => void;
-  onSaveDuel: () => void;
-  onStartNewDuel: () => void;
-  onOpenHistory: () => void;
-  rewardPreview: TortueRewardPreview | null;
-  onCloseRewardPreview: () => void;
-}
-
 export function getDisplayFamilyName(name: string, fallbackIndex: 0 | 1): string {
   const trimmed = name.trim();
-  return trimmed.length > 0 ? trimmed.toUpperCase() : `FAMILLE ${fallbackIndex + 1}`;
+  return trimmed.length > 0 ? trimmed.toUpperCase() : `FAMILLE N°${fallbackIndex + 1}`;
 }
 
 export function getOutcomeLabel(outcome: FamilyOutcome): string {
@@ -214,128 +197,74 @@ export function TortueClueVisual({
   );
 }
 
+interface FamilyDuelBarProps {
+  families: [DuelFamilySlot, DuelFamilySlot];
+  currentLevelIndex: number;
+  currentLevelLabel: string;
+  onSetFamilyLevelResult: (
+    id: 0 | 1,
+    levelIdx: number,
+    status: LevelAttemptStatus,
+  ) => void;
+}
+
+/**
+ * In-game family duel panel: displays the registered Family 1 vs Family 2 names
+ * (entered on the HomeScreen) with per-level Réussi/Raté validation.
+ */
 export function FamilyDuelBar({
   families,
   currentLevelIndex,
   currentLevelLabel,
-  savedDuelsCount,
-  saveFeedback,
-  onRenameFamily,
   onSetFamilyLevelResult,
-  onSetFamilyOutcome,
-  onPreviewOutcome,
-  onSaveDuel,
-  onStartNewDuel,
-  onOpenHistory,
-  rewardPreview,
-  onCloseRewardPreview,
 }: FamilyDuelBarProps) {
-  const [imgBroken, setImgBroken] = useState(false);
-
-  useEffect(() => {
-    if (!rewardPreview) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onCloseRewardPreview();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [rewardPreview, onCloseRewardPreview]);
-
-  const canSaveDuel =
-    families[0].name.trim().length > 0 ||
-    families[1].name.trim().length > 0 ||
-    families[0].outcome !== 'pending' ||
-    families[1].outcome !== 'pending' ||
-    countEvaluatedLevels(families[0].levelResults) > 0 ||
-    countEvaluatedLevels(families[1].levelResults) > 0;
-
   return (
-    <>
-      <section
-        aria-label="Duel simultané des deux familles pour la Tortue d'Or"
-        className="w-full"
-      >
-        <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-[1fr_auto_1fr] md:gap-4">
-          {families.map((team, idx) => {
-            const displayName = getDisplayFamilyName(team.name, team.id);
-            const currentLvlStatus = team.levelResults[currentLevelIndex] ?? 'pending';
-            const passedCount = countPassedLevels(team.levelResults);
-            const allLevelsPassed = passedCount === LEVELS.length;
+    <section
+      aria-label="Les deux familles en duel"
+      className="w-full rounded-2xl border border-[#F5B324]/35 bg-[#3B050A]/88 p-4 shadow-md shadow-black/25 backdrop-blur-xs"
+    >
+      <div className="flex flex-col gap-2.5">
+        {families.map((team, idx) => {
+          const displayName = getDisplayFamilyName(team.name, team.id);
+          const currentLvlStatus = team.levelResults[currentLevelIndex] ?? 'pending';
+          const passedCount = countPassedLevels(team.levelResults);
 
-            const teamCard = (
-              <div
-                key={team.id}
-                className={`flex flex-col justify-between rounded-2xl border p-4 transition-colors ${
-                  team.outcome === 'complete'
-                    ? 'border-[#FCD34D] bg-[#48070D]/95 shadow-md shadow-black/30'
-                    : team.outcome === 'partial'
-                      ? 'border-[#F59E0B]/70 bg-[#42070C]/92 shadow-sm shadow-black/25'
-                      : 'border-[#F5B324]/40 bg-[#3B050A]/88 shadow-sm shadow-black/20'
-                }`}
-              >
-                {/* Row 1: Editable Family Name + Live Per-Level Tally */}
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#F5B324]/40 bg-[#240306]/85 text-[#FCD34D]">
+          const teamCard = (
+            <div
+              key={team.id}
+              className="flex flex-col gap-2.5 rounded-xl border border-[#F5B324]/25 bg-[#260306]/75 p-3"
+            >
+              {/* Registered Family Name (Read-only in game) + Score */}
+              <div className="flex items-center justify-between gap-2.5">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#F5B324]/40 bg-[#3B050A] text-[#FCD34D]">
                     <Users className="h-4 w-4" aria-hidden="true" />
                   </div>
-                  <div className="relative flex min-w-0 flex-1 items-center">
-                    <label htmlFor={`family-name-${team.id}`} className="sr-only">
-                      Nom de la famille {team.id + 1}
-                    </label>
-                    <input
-                      id={`family-name-${team.id}`}
-                      type="text"
-                      value={team.name}
-                      maxLength={32}
-                      onChange={(e) => onRenameFamily(team.id, e.target.value)}
-                      placeholder={`NOM FAMILLE ${team.id + 1}`}
-                      className="min-h-[42px] w-full rounded-xl border border-[#F5B324]/35 bg-[#240306]/85 py-1.5 pl-3 pr-8 text-sm sm:text-base font-extrabold uppercase tracking-wide text-[#FFF8EA] placeholder:text-[#F3D9A4]/45 transition-colors focus:border-[#FCD34D] focus:bg-[#2E0408] focus:outline-none focus:ring-2 focus:ring-[#FCD34D]/50"
-                    />
-                    <Pencil
-                      className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-[#F5B324]/65"
-                      aria-hidden="true"
-                    />
-                  </div>
-                  <div
-                    className="shrink-0 text-right tabular-nums"
-                    title={`${passedCount} niveaux réussis sur ${LEVELS.length}`}
-                  >
-                    <span className="text-sm sm:text-base font-extrabold text-[#FCD34D]">
-                      {passedCount}
-                    </span>
-                    <span className="text-xs font-bold text-[#F3D9A4]/70">
-                      /{LEVELS.length}
-                    </span>
-                  </div>
+                  <h3 className="truncate text-sm sm:text-base font-extrabold uppercase tracking-wide text-[#FFF8EA]">
+                    {displayName}
+                  </h3>
                 </div>
 
-                {/* Row 2: Per-Level Challenge Pass/Fail Controls for This Team */}
-                <div className="mt-3 border-t border-[#F5B324]/20 pt-3">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="font-bold text-[#F3D9A4]">
-                      Défi · <span className="text-[#FFF8EA]">{currentLevelLabel}</span>
-                    </span>
-                    <span
-                      className={`font-extrabold ${
-                        currentLvlStatus === 'passed'
-                          ? 'text-[#6EE7B7]'
-                          : currentLvlStatus === 'failed'
-                            ? 'text-[#FCA5A5]'
-                            : 'text-[#F3D9A4]/65'
-                      }`}
-                    >
-                      {currentLvlStatus === 'passed'
-                        ? 'Réussi'
-                        : currentLvlStatus === 'failed'
-                          ? 'Raté'
-                          : 'À valider'}
-                    </span>
-                  </div>
+                <div
+                  className="shrink-0 text-right tabular-nums"
+                  title={`${passedCount} niveaux réussis sur ${LEVELS.length}`}
+                >
+                  <span className="text-sm font-extrabold text-[#FCD34D]">
+                    {passedCount}
+                  </span>
+                  <span className="text-xs font-bold text-[#F3D9A4]/70">
+                    /{LEVELS.length}
+                  </span>
+                </div>
+              </div>
 
-                  {/* Direct Réussi / Raté buttons for the active level */}
-                  <div className="mt-2 grid grid-cols-2 gap-2">
+              {/* Compact Per-Level Validation (Current Level Réussi/Raté + 6-level strip) */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-[#F3D9A4] whitespace-nowrap shrink-0">
+                    {currentLevelLabel} :
+                  </span>
+                  <div className="grid flex-1 grid-cols-2 gap-1.5">
                     <button
                       type="button"
                       onClick={() =>
@@ -346,14 +275,14 @@ export function FamilyDuelBar({
                         )
                       }
                       aria-pressed={currentLvlStatus === 'passed'}
-                      className={`inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide transition-all active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                      className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wide transition-all active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
                         currentLvlStatus === 'passed'
-                          ? 'border-[#6EE7B7] bg-[#065F46] text-[#ECFDF5] shadow-sm'
-                          : 'border-[#F5B324]/35 bg-[#260306]/90 text-[#FFF8EA] hover:bg-[#3A070C] hover:border-[#6EE7B7]/80'
+                          ? 'border-[#6EE7B7] bg-[#065F46] text-[#ECFDF5] shadow-xs'
+                          : 'border-[#F5B324]/30 bg-[#3B050A] text-[#FFF8EA] hover:bg-[#4E0910] hover:border-[#6EE7B7]/80'
                       }`}
                     >
                       <Check
-                        className={`h-4 w-4 shrink-0 ${
+                        className={`h-3.5 w-3.5 shrink-0 ${
                           currentLvlStatus === 'passed' ? 'text-[#6EE7B7]' : 'text-[#6EE7B7]/80'
                         }`}
                         aria-hidden="true"
@@ -371,14 +300,14 @@ export function FamilyDuelBar({
                         )
                       }
                       aria-pressed={currentLvlStatus === 'failed'}
-                      className={`inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide transition-all active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                      className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wide transition-all active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
                         currentLvlStatus === 'failed'
-                          ? 'border-[#FCA5A5] bg-[#7F1D1D] text-[#FEF2F2] shadow-sm'
-                          : 'border-[#F5B324]/35 bg-[#260306]/90 text-[#F3D9A4] hover:bg-[#3A070C] hover:border-[#FCA5A5]/80'
+                          ? 'border-[#FCA5A5] bg-[#7F1D1D] text-[#FEF2F2] shadow-xs'
+                          : 'border-[#F5B324]/30 bg-[#3B050A] text-[#F3D9A4] hover:bg-[#4E0910] hover:border-[#FCA5A5]/80'
                       }`}
                     >
                       <X
-                        className={`h-4 w-4 shrink-0 ${
+                        className={`h-3.5 w-3.5 shrink-0 ${
                           currentLvlStatus === 'failed' ? 'text-[#FCA5A5]' : 'text-[#F87171]/80'
                         }`}
                         aria-hidden="true"
@@ -386,231 +315,347 @@ export function FamilyDuelBar({
                       <span>Raté</span>
                     </button>
                   </div>
-
-                  {/* Interactive 6-Level Per-Team Tracker Strip (tap any level to toggle/correct) */}
-                  <div
-                    className="mt-2 grid grid-cols-6 gap-1.5"
-                    role="group"
-                    aria-label={`Suivi par niveau de ${displayName}`}
-                  >
-                    {LEVELS.map((lvl) => {
-                      const status = team.levelResults[lvl.index] ?? 'pending';
-                      const isCurrent = lvl.index === currentLevelIndex;
-                      const shortCode = LEVEL_SHORT_CODES[lvl.index] ?? `N${lvl.index + 1}`;
-                      const statusLabel =
-                        status === 'passed'
-                          ? 'Réussi'
-                          : status === 'failed'
-                            ? 'Raté'
-                            : 'En attente';
-
-                      return (
-                        <button
-                          key={lvl.index}
-                          type="button"
-                          onClick={() =>
-                            onSetFamilyLevelResult(
-                              team.id,
-                              lvl.index,
-                              getNextCycledLevelStatus(status),
-                            )
-                          }
-                          title={`${displayName} · ${lvl.label} : ${statusLabel} (cliquer pour modifier)`}
-                          aria-label={`${displayName}, ${lvl.label} : ${statusLabel}. Cliquer pour changer`}
-                          className={`flex min-h-[40px] flex-col items-center justify-center rounded-lg border px-1 py-1 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
-                            status === 'passed'
-                              ? 'border-[#6EE7B7]/75 bg-[#065F46]/80 text-[#ECFDF5]'
-                              : status === 'failed'
-                                ? 'border-[#FCA5A5]/70 bg-[#7F1D1D]/85 text-[#FEE2E2]'
-                                : 'border-[#F5B324]/25 bg-[#240306]/80 text-[#F3D9A4]/70 hover:border-[#F5B324]/60 hover:text-[#FFF8EA]'
-                          } ${isCurrent ? 'ring-2 ring-[#FCD34D] ring-offset-1 ring-offset-[#3B050A]' : ''}`}
-                        >
-                          <span className="text-[10px] font-extrabold leading-none tracking-tight tabular-nums">
-                            {shortCode}
-                          </span>
-                          <span className="mt-1 flex items-center justify-center">
-                            {status === 'passed' ? (
-                              <Check className="h-3.5 w-3.5 text-[#6EE7B7]" aria-hidden="true" />
-                            ) : status === 'failed' ? (
-                              <X className="h-3.5 w-3.5 text-[#FCA5A5]" aria-hidden="true" />
-                            ) : (
-                              <Minus className="h-3 w-3 opacity-45" aria-hidden="true" />
-                            )}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
                 </div>
 
-                {/* Row 3: Final Tortue d'Or Reward (Image entière / Moitié) */}
-                <div className="mt-3 border-t border-[#F5B324]/18 pt-3">
-                  <div className="flex items-center justify-between gap-2.5 min-h-[44px]">
-                    {team.outcome === 'pending' ? (
-                      <p className="text-xs font-medium text-[#F3D9A4]/80">
-                        {allLevelsPassed ? (
-                          <span className="font-bold text-[#FDE68A]">
-                            6/6 défis réussis · Prêt pour l’image entière
-                          </span>
+                <div
+                  className="grid grid-cols-6 gap-1"
+                  role="group"
+                  aria-label={`Suivi par niveau de ${displayName}`}
+                >
+                  {LEVELS.map((lvl) => {
+                    const status = team.levelResults[lvl.index] ?? 'pending';
+                    const isCurrent = lvl.index === currentLevelIndex;
+                    const shortCode = LEVEL_SHORT_CODES[lvl.index] ?? `N${lvl.index + 1}`;
+                    const statusLabel =
+                      status === 'passed'
+                        ? 'Réussi'
+                        : status === 'failed'
+                          ? 'Raté'
+                          : 'En attente';
+
+                    return (
+                      <button
+                        key={lvl.index}
+                        type="button"
+                        onClick={() =>
+                          onSetFamilyLevelResult(
+                            team.id,
+                            lvl.index,
+                            getNextCycledLevelStatus(status),
+                          )
+                        }
+                        title={`${displayName} · ${lvl.label} : ${statusLabel}`}
+                        aria-label={`${displayName}, ${lvl.label} : ${statusLabel}`}
+                        className={`flex min-h-[34px] items-center justify-center gap-1 rounded-md border px-1 py-1 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                          status === 'passed'
+                            ? 'border-[#6EE7B7]/75 bg-[#065F46]/80 text-[#ECFDF5]'
+                            : status === 'failed'
+                              ? 'border-[#FCA5A5]/70 bg-[#7F1D1D]/85 text-[#FEE2E2]'
+                              : 'border-[#F5B324]/25 bg-[#1E0205] text-[#F3D9A4]/70 hover:border-[#F5B324]/60 hover:text-[#FFF8EA]'
+                        } ${isCurrent ? 'ring-2 ring-[#FCD34D] ring-offset-1 ring-offset-[#260306]' : ''}`}
+                      >
+                        <span className="text-[10px] font-extrabold leading-none tabular-nums">
+                          {shortCode}
+                        </span>
+                        {status === 'passed' ? (
+                          <Check className="h-3 w-3 shrink-0 text-[#6EE7B7]" aria-hidden="true" />
+                        ) : status === 'failed' ? (
+                          <X className="h-3 w-3 shrink-0 text-[#FCA5A5]" aria-hidden="true" />
                         ) : (
-                          'Tortue d’Or · Choisissez l’image à remettre en fin de duel'
+                          <Minus className="h-2.5 w-2.5 shrink-0 opacity-45" aria-hidden="true" />
                         )}
-                      </p>
-                    ) : (
-                      <>
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <TortueClueVisual
-                            kind={team.outcome}
-                            size="thumb"
-                            imgBroken={imgBroken}
-                            onImgError={() => setImgBroken(true)}
-                          />
-                          <div className="min-w-0">
-                            <div className="text-xs sm:text-sm font-extrabold text-[#FDE68A] truncate">
-                              {team.outcome === 'complete'
-                                ? 'Complète · Image entière'
-                                : 'Partielle · Moitié d’image'}
-                            </div>
-                            {(team.mudrasReached !== null || team.elapsedSec !== null) && (
-                              <div className="text-[11px] font-semibold text-[#F3D9A4]/80 tabular-nums">
-                                {team.mudrasReached !== null && `${team.mudrasReached}/7 mudras`}
-                                {team.mudrasReached !== null && team.elapsedSec !== null && ' · '}
-                                {team.elapsedSec !== null && formatElapsedTime(team.elapsedSec)}
-                              </div>
-                            )}
-                          </div>
-                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          );
 
-                        <button
-                          type="button"
-                          onClick={() => onPreviewOutcome(team.id)}
-                          aria-label={`Afficher la carte Tortue d'Or pour ${displayName}`}
-                          className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3 py-1.5 text-xs font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
-                        >
-                          <Eye className="h-3.5 w-3.5 text-[#FCD34D]" aria-hidden="true" />
-                          <span>Voir</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
+          if (idx === 0) {
+            return (
+              <div key="family-0-wrapper" className="contents">
+                {teamCard}
 
-                  <div className="mt-2.5 grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onSetFamilyOutcome(
-                          team.id,
-                          team.outcome === 'complete' ? 'pending' : 'complete',
-                        )
-                      }
-                      aria-pressed={team.outcome === 'complete'}
-                      className={`inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide transition-all active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
-                        team.outcome === 'complete'
-                          ? 'border-[#FEF08A] bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-white shadow-sm'
-                          : 'border-[#F5B324]/45 bg-[#5E0A12] text-[#FFF8EA] hover:bg-[#7A1019] hover:border-[#FCD34D]'
-                      }`}
-                    >
-                      <Award
-                        className={`h-4 w-4 shrink-0 ${
-                          team.outcome === 'complete' ? 'text-[#FEF08A]' : 'text-[#FCD34D]'
-                        }`}
-                        aria-hidden="true"
-                      />
-                      <span>Image entière</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onSetFamilyOutcome(
-                          team.id,
-                          team.outcome === 'partial' ? 'pending' : 'partial',
-                        )
-                      }
-                      aria-pressed={team.outcome === 'partial'}
-                      className={`inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide transition-all active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
-                        team.outcome === 'partial'
-                          ? 'border-[#FEF08A] bg-gradient-to-b from-[#D97706] to-[#B45309] text-[#220306] shadow-sm'
-                          : 'border-[#F5B324]/45 bg-[#5E0A12] text-[#FDE68A] hover:bg-[#7A1019] hover:border-[#FCD34D]'
-                      }`}
-                    >
-                      <ImageIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                      <span>Moitié (½)</span>
-                    </button>
-                  </div>
+                {/* Sleek Horizontal CONTRE Divider */}
+                <div className="flex items-center gap-3 px-1">
+                  <div className="h-px flex-1 bg-[#F5B324]/25" aria-hidden="true" />
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-widest text-[#FCD34D]">
+                    <Swords className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>CONTRE</span>
+                  </span>
+                  <div className="h-px flex-1 bg-[#F5B324]/25" aria-hidden="true" />
                 </div>
               </div>
             );
+          }
 
-            if (idx === 0) {
-              return (
-                <div key="family-0-wrapper" className="contents">
-                  {teamCard}
+          return teamCard;
+        })}
+      </div>
+    </section>
+  );
+}
 
-                  {/* Center CONTRE Emblem */}
-                  <div className="flex items-center justify-center py-0.5 md:px-1">
-                    <div className="flex items-center justify-center gap-2 rounded-2xl border border-[#F5B324]/55 bg-[#2C0408]/95 px-4 py-2 text-xs font-extrabold uppercase tracking-widest text-[#FCD34D] shadow-sm md:flex-col md:gap-1.5 md:px-3 md:py-4">
-                      <Swords className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                      <span>CONTRE</span>
-                    </div>
+interface DuelFinishFooterProps {
+  families: [DuelFamilySlot, DuelFamilySlot];
+  isGameFinished: boolean;
+  savedDuelsCount: number;
+  saveFeedback: string | null;
+  serverUserEmail: string | null;
+  isAuthBusy: boolean;
+  onSignInServer: () => void;
+  onSignOutServer: () => void;
+  onSetFamilyOutcome: (id: 0 | 1, outcome: FamilyOutcome) => void;
+  onPreviewOutcome: (id: 0 | 1) => void;
+  onSaveDuel: () => void;
+  onStartNewDuel: () => void;
+  onReturnHome?: () => void;
+  onOpenHistory: () => void;
+  rewardPreview: TortueRewardPreview | null;
+  onCloseRewardPreview: () => void;
+}
+
+/**
+ * Bottom-of-page End-of-Duel & Recording Bar:
+ * - Tortue d'Or reward toggles (Image entière / Moitié)
+ * - "Enregistrer le duel" button shown prominently at the bottom when the game finishes
+ * - "Duel suivant" button that automatically saves into the session (and server when connected)
+ * - "Carnet des duels" + 1-click Google server sync
+ */
+export function DuelFinishFooter({
+  families,
+  isGameFinished,
+  savedDuelsCount,
+  saveFeedback,
+  serverUserEmail,
+  isAuthBusy,
+  onSignInServer,
+  onSignOutServer,
+  onSetFamilyOutcome,
+  onPreviewOutcome,
+  onSaveDuel,
+  onStartNewDuel,
+  onReturnHome,
+  onOpenHistory,
+  rewardPreview,
+  onCloseRewardPreview,
+}: DuelFinishFooterProps) {
+  const [imgBroken, setImgBroken] = useState(false);
+
+  useEffect(() => {
+    if (!rewardPreview) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCloseRewardPreview();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [rewardPreview, onCloseRewardPreview]);
+
+  const hasAnyOutcome =
+    families[0].outcome !== 'pending' || families[1].outcome !== 'pending';
+  const showSaveButton = isGameFinished || hasAnyOutcome;
+
+  return (
+    <>
+      <footer
+        aria-label="Fin de partie et enregistrement du duel"
+        className={`w-full rounded-2xl border p-4 sm:p-5 transition-colors ${
+          isGameFinished
+            ? 'border-[#FCD34D] bg-[#3B050A]/95 shadow-lg shadow-black/35'
+            : 'border-[#F5B324]/30 bg-[#2E0408]/90'
+        }`}
+      >
+        {/* Row 1: Compact Tortue d'Or End-of-Duel Reward Pickers */}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {families.map((team) => {
+            const displayName = getDisplayFamilyName(team.name, team.id);
+            const passedCount = countPassedLevels(team.levelResults);
+
+            return (
+              <div
+                key={team.id}
+                className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-[#F5B324]/25 bg-[#240306]/80 px-3.5 py-2.5"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {team.outcome !== 'pending' && (
+                    <button
+                      type="button"
+                      onClick={() => onPreviewOutcome(team.id)}
+                      aria-label={`Afficher l'image Tortue d'Or pour ${displayName}`}
+                      title="Afficher en grand"
+                      className="group relative shrink-0 cursor-pointer rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                    >
+                      <TortueClueVisual
+                        kind={team.outcome}
+                        size="thumb"
+                        imgBroken={imgBroken}
+                        onImgError={() => setImgBroken(true)}
+                      />
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/45 opacity-0 transition-opacity group-hover:opacity-100"
+                      >
+                        <Eye className="h-4 w-4 text-[#FEF08A]" />
+                      </span>
+                    </button>
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-xs sm:text-sm font-extrabold uppercase tracking-wide text-[#FFF8EA] truncate">
+                      {displayName}
+                    </p>
+                    <p className="text-[11px] font-semibold text-[#F3D9A4]/80 tabular-nums">
+                      {passedCount}/{LEVELS.length} niveaux réussis
+                      {team.outcome !== 'pending' && (
+                        <>
+                          <span className="mx-1 text-[#F5B324]/50" aria-hidden="true">
+                            ·
+                          </span>
+                          <span className="text-[#FDE68A]">
+                            {team.outcome === 'complete' ? 'Image entière' : 'Moitié (½)'}
+                          </span>
+                        </>
+                      )}
+                    </p>
                   </div>
                 </div>
-              );
-            }
 
-            return teamCard;
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSetFamilyOutcome(
+                        team.id,
+                        team.outcome === 'complete' ? 'pending' : 'complete',
+                      )
+                    }
+                    aria-pressed={team.outcome === 'complete'}
+                    className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wide transition-colors cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                      team.outcome === 'complete'
+                        ? 'border-[#FEF08A] bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-white'
+                        : 'border-[#F5B324]/35 bg-[#4A080F] text-[#FFF8EA] hover:bg-[#6E0D15] hover:border-[#FCD34D]'
+                    }`}
+                  >
+                    <Award className="h-3.5 w-3.5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                    <span>Image entière</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSetFamilyOutcome(
+                        team.id,
+                        team.outcome === 'partial' ? 'pending' : 'partial',
+                      )
+                    }
+                    aria-pressed={team.outcome === 'partial'}
+                    className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wide transition-colors cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                      team.outcome === 'partial'
+                        ? 'border-[#FEF08A] bg-gradient-to-b from-[#D97706] to-[#B45309] text-[#220306]'
+                        : 'border-[#F5B324]/35 bg-[#4A080F] text-[#FDE68A] hover:bg-[#6E0D15] hover:border-[#FCD34D]'
+                    }`}
+                  >
+                    <ImageIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>Moitié (½)</span>
+                  </button>
+                </div>
+              </div>
+            );
           })}
         </div>
 
-        {/* Unified Duel Recording & History Action Strip */}
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#F5B324]/30 bg-[#2E0408]/88 px-4 py-2.5">
-          <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm font-semibold text-[#F3D9A4]">
-            <span className="font-extrabold uppercase text-[#FFF8EA]">
-              {getDisplayFamilyName(families[0].name, 0)}
-            </span>
-            <span className="text-[#FCD34D] font-bold">CONTRE</span>
-            <span className="font-extrabold uppercase text-[#FFF8EA]">
-              {getDisplayFamilyName(families[1].name, 1)}
-            </span>
-            <span className="text-[#F5B324]/50" aria-hidden="true">
-              ·
-            </span>
-            <span className="text-[#F3D9A4]/80">
-              {saveFeedback ?? 'Jeu en simultané · 1 min par niveau'}
-            </span>
+        {/* Row 2: Bottom Action Controls (Save when finished + Duel suivant + History + Server Sync) */}
+        <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 border-t border-[#F5B324]/20 pt-3.5">
+          {/* Server sync status / 1-click Google login */}
+          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[#F3D9A4]">
+            {serverUserEmail ? (
+              <>
+                <Cloud className="h-4 w-4 shrink-0 text-[#6EE7B7]" aria-hidden="true" />
+                <span className="text-[#FFF8EA]">
+                  Serveur connecté ({serverUserEmail})
+                </span>
+                <button
+                  type="button"
+                  onClick={onSignOutServer}
+                  disabled={isAuthBusy}
+                  className="inline-flex min-h-[34px] items-center gap-1 rounded-lg border border-[#F5B324]/30 bg-[#3B050A] px-2.5 py-1 text-xs font-bold text-[#F3D9A4] transition-colors hover:border-[#FCD34D] hover:text-[#FFF8EA] cursor-pointer whitespace-nowrap"
+                >
+                  <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Déconnexion</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <CloudOff className="h-4 w-4 shrink-0 text-[#F5B324]/70" aria-hidden="true" />
+                <span>Session locale</span>
+                <button
+                  type="button"
+                  onClick={onSignInServer}
+                  disabled={isAuthBusy}
+                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-[#F5B324]/50 bg-[#5E0A12] px-3 py-1.5 text-xs font-extrabold text-[#FDE68A] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] disabled:opacity-50 cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                >
+                  <LogIn className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Enregistrer sur le serveur (Google)</span>
+                </button>
+              </>
+            )}
+
+            {saveFeedback && (
+              <>
+                <span className="text-[#F5B324]/45" aria-hidden="true">
+                  ·
+                </span>
+                <span className="font-bold text-[#FDE68A]">{saveFeedback}</span>
+              </>
+            )}
           </div>
 
+          {/* Primary Bottom Duel Actions */}
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={onSaveDuel}
-              disabled={!canSaveDuel}
-              className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-3.5 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
-            >
-              <BookmarkCheck className="h-4 w-4 shrink-0 text-[#FDE68A]" aria-hidden="true" />
-              <span>Enregistrer le duel</span>
-            </button>
+            {showSaveButton && (
+              <button
+                type="button"
+                onClick={onSaveDuel}
+                className="animate-lotus-reveal inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border-2 border-[#FEF08A] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white shadow-md shadow-black/30 transition-all hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              >
+                <BookmarkCheck className="h-4 w-4 shrink-0 text-[#FEF08A]" aria-hidden="true" />
+                <span>Enregistrer le duel</span>
+              </button>
+            )}
 
             <button
               type="button"
               onClick={onStartNewDuel}
-              className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3.5 py-2 text-xs sm:text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/75 bg-[#7F1119] px-4 py-2.5 text-sm font-extrabold uppercase tracking-wide text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#9E1620] hover:border-[#FEF08A] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
             >
               <PlusCircle className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
               <span>Duel suivant</span>
             </button>
 
+            {onReturnHome && (
+              <button
+                type="button"
+                onClick={onReturnHome}
+                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/55 bg-[#5E0A12] px-4 py-2.5 text-sm font-extrabold uppercase tracking-wide text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              >
+                <Home className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                <span>Accueil</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={onOpenHistory}
-              className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border border-[#F5B324]/55 bg-[#48070D] px-3.5 py-2 text-xs sm:text-sm font-extrabold text-[#FDE68A] transition-colors hover:bg-[#6E0D15] hover:border-[#FCD34D] cursor-pointer whitespace-nowrap tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#F5B324]/50 bg-[#48070D] px-4 py-2.5 text-sm font-extrabold text-[#FDE68A] transition-colors hover:bg-[#6E0D15] hover:border-[#FCD34D] cursor-pointer whitespace-nowrap tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
             >
               <ClipboardList className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
               <span>Carnet des duels ({savedDuelsCount})</span>
             </button>
           </div>
         </div>
-      </section>
+      </footer>
 
       {/* Celebratory Golden Turtle Clue Reveal Modal */}
       {rewardPreview && (

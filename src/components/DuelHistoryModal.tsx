@@ -260,8 +260,8 @@ export function DuelHistoryModal({
                 Aucun duel enregistré pour le moment
               </p>
               <p className="mt-1 text-sm text-[#F3D9A4]/75">
-                Saisissez le nom des deux familles en haut de l’écran, validez leurs défis par
-                niveau et leur récompense, puis cliquez sur « Enregistrer le duel ».
+                Saisissez le nom des deux familles en haut, validez leurs niveaux, puis cliquez
+                sur « Enregistrer le duel » ou « Duel suivant » tout en bas.
               </p>
             </div>
           ) : filteredDuels.length === 0 ? (

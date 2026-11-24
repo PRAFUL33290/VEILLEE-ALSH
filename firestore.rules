@@ -1,0 +1,154 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened global primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidOutcome(val) {
+      return val is string && val in ['pending', 'complete', 'partial'];
+    }
+
+    function isValidLevelResults(arr) {
+      return arr is list
+        && arr.size() == 6
+        && arr.hasOnly(['pending', 'passed', 'failed']);
+    }
+
+    function isValidMudrasReached(val) {
+      return val is int && val >= -1 && val <= 7;
+    }
+
+    function isValidElapsedSec(val) {
+      return val is int && val >= -1 && val <= 86400;
+    }
+
+    function isValidDuel(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'duelNumber',
+          'recordedAtIso',
+          'familyAName',
+          'familyAOutcome',
+          'familyALevelResults',
+          'familyAMudrasReached',
+          'familyAElapsedSec',
+          'familyBName',
+          'familyBOutcome',
+          'familyBLevelResults',
+          'familyBMudrasReached',
+          'familyBElapsedSec',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'duelNumber',
+          'recordedAtIso',
+          'familyAName',
+          'familyAOutcome',
+          'familyALevelResults',
+          'familyAMudrasReached',
+          'familyAElapsedSec',
+          'familyBName',
+          'familyBOutcome',
+          'familyBLevelResults',
+          'familyBMudrasReached',
+          'familyBElapsedSec',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.duelNumber is int
+        && data.duelNumber >= 1
+        && data.duelNumber <= 100000
+        && data.recordedAtIso is string
+        && data.recordedAtIso.size() >= 10
+        && data.recordedAtIso.size() <= 40
+        && data.familyAName is string
+        && data.familyAName.size() >= 1
+        && data.familyAName.size() <= 40
+        && isValidOutcome(data.familyAOutcome)
+        && isValidLevelResults(data.familyALevelResults)
+        && isValidMudrasReached(data.familyAMudrasReached)
+        && isValidElapsedSec(data.familyAElapsedSec)
+        && data.familyBName is string
+        && data.familyBName.size() >= 1
+        && data.familyBName.size() <= 40
+        && isValidOutcome(data.familyBOutcome)
+        && isValidLevelResults(data.familyBLevelResults)
+        && isValidMudrasReached(data.familyBMudrasReached)
+        && isValidElapsedSec(data.familyBElapsedSec)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /duels/{duelId} {
+      allow get: if isSignedIn()
+        && isValidId(duelId)
+        && existing().ownerId == request.auth.uid;
+
+      allow list: if isSignedIn()
+        && existing().ownerId == request.auth.uid;
+
+      allow create: if isVerified()
+        && isValidId(duelId)
+        && isValidDuel(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerified()
+        && isValidId(duelId)
+        && isValidDuel(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().duelNumber == existing().duelNumber
+        && incoming().recordedAtIso == existing().recordedAtIso
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Update Tortue d'Or outcomes for Family A or Family B
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'familyAOutcome',
+            'familyBOutcome',
+            'updatedAt'
+          ])
+          ||
+          // Action 2: Update per-level challenge results for Family A or Family B
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'familyALevelResults',
+            'familyBLevelResults',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isVerified()
+        && isValidId(duelId)
+        && existing().ownerId == request.auth.uid;
+    }
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "DuelRecord": {
+      "title": "DuelRecord",
+      "description": "A recorded simultaneous 2-family duel in Le défi des Mudras with per-level challenge verdicts and Tortue d'Or reward outcomes.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the event host who recorded this duel.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "duelNumber": {
+          "type": "integer",
+          "description": "Sequential duel number within the host's register."
+        },
+        "recordedAtIso": {
+          "type": "string",
+          "description": "ISO-8601 timestamp string displayed in the host's duel log.",
+          "minLength": 10,
+          "maxLength": 40
+        },
+        "familyAName": {
+          "type": "string",
+          "description": "Name of Family 1.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "familyAOutcome": {
+          "type": "string",
+          "description": "Final Tortue d'Or reward outcome for Family 1.",
+          "enum": ["pending", "complete", "partial"]
+        },
+        "familyALevelResults": {
+          "type": "array",
+          "description": "Fixed 6-element array of per-level challenge verdicts for Family 1 (pending, passed, failed)."
+        },
+        "familyAMudrasReached": {
+          "type": "integer",
+          "description": "Number of mudras reached by Family 1 (-1 when unset, otherwise 0..7)."
+        },
+        "familyAElapsedSec": {
+          "type": "integer",
+          "description": "Elapsed duel seconds for Family 1 (-1 when unset, otherwise 0..86400)."
+        },
+        "familyBName": {
+          "type": "string",
+          "description": "Name of Family 2.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "familyBOutcome": {
+          "type": "string",
+          "description": "Final Tortue d'Or reward outcome for Family 2.",
+          "enum": ["pending", "complete", "partial"]
+        },
+        "familyBLevelResults": {
+          "type": "array",
+          "description": "Fixed 6-element array of per-level challenge verdicts for Family 2 (pending, passed, failed)."
+        },
+        "familyBMudrasReached": {
+          "type": "integer",
+          "description": "Number of mudras reached by Family 2 (-1 when unset, otherwise 0..7)."
+        },
+        "familyBElapsedSec": {
+          "type": "integer",
+          "description": "Elapsed duel seconds for Family 2 (-1 when unset, otherwise 0..86400)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the duel was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the duel was last modified."
+        }
+      },
+      "required": [
+        "ownerId",
+        "duelNumber",
+        "recordedAtIso",
+        "familyAName",
+        "familyAOutcome",
+        "familyALevelResults",
+        "familyAMudrasReached",
+        "familyAElapsedSec",
+        "familyBName",
+        "familyBOutcome",
+        "familyBLevelResults",
+        "familyBMudrasReached",
+        "familyBElapsedSec",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/duels/{duelId}": {
+      "schema": { "$ref": "#/entities/DuelRecord" },
+      "description": "Host-owned recorded family duels for Le défi des Mudras."
+    }
+  }
+}
