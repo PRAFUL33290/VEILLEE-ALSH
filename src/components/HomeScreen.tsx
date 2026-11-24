@@ -420,7 +420,7 @@ export function HomeScreen({
               step: '02',
               title: '8 minutes chrono au total',
               detail:
-                '2 minutes pour découvrir les règles et les 12 mudras, puis 6 minutes de jeu pour réussir le défi.',
+                `2 minutes pour découvrir les règles et les ${MUDRAS.length} mudras, puis 6 minutes de jeu pour réussir le défi.`,
             },
             {
               step: '03',

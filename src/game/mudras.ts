@@ -62,19 +62,22 @@ const MUDRA_DEFINITIONS = [
   { name: 'Pataka', meaningFr: 'Drapeau' },
   { name: 'Tripataka', meaningFr: 'Drapeau en trois' },
   { name: 'Kartharimukha', meaningFr: 'Ciseaux' },
+  { name: 'Suchi', meaningFr: 'Aiguille' },
+  { name: 'Chandrakala', meaningFr: 'Croissant de lune' },
+  { name: 'Mukula', meaningFr: 'Fleur en bourgeon' },
   { name: 'Ardhachandra', meaningFr: 'Demi-lune' },
   { name: 'Mushti', meaningFr: 'Poing fermé' },
   { name: 'Shikhara', meaningFr: 'Sommet, pic' },
-  { name: 'Suchi', meaningFr: 'Aiguille' },
-  { name: 'Chandrakala', meaningFr: 'Croissant de lune' },
-  { name: 'Padmakosha', meaningFr: 'Bouton de lotus' },
-  { name: 'Alapadma', meaningFr: 'Lotus épanoui' },
-  { name: 'Mukula', meaningFr: 'Fleur en bourgeon' },
-  { name: 'Trishula', meaningFr: 'Trident' },
+  { name: 'Sarpashirsha', meaningFr: 'Tête de serpent' },
+  { name: 'Kapitha', meaningFr: 'Pomme de bois' },
 ] as const;
 
+// Non-clashing theme sequence for 11 sectors so sector 10 (burgundy) contrasts sharply with sector 0 (gold)
+const SECTOR_THEME_INDICES = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 3] as const;
+
 export const MUDRAS: readonly MudraSector[] = MUDRA_DEFINITIONS.map((def, index) => {
-  const theme = SECTOR_THEMES[index % SECTOR_THEMES.length];
+  const themeIdx = SECTOR_THEME_INDICES[index % SECTOR_THEME_INDICES.length];
+  const theme = SECTOR_THEMES[themeIdx];
   return {
     id: index,
     name: def.name,
@@ -86,9 +89,9 @@ export const MUDRAS: readonly MudraSector[] = MUDRA_DEFINITIONS.map((def, index)
   };
 });
 
-export const SECTOR_COUNT = MUDRAS.length; // 12
+export const SECTOR_COUNT = MUDRAS.length; // 11
 export const TWO_PI = Math.PI * 2;
-export const SECTOR_ANGLE = TWO_PI / SECTOR_COUNT; // Math.PI / 6 (30 deg)
+export const SECTOR_ANGLE = TWO_PI / SECTOR_COUNT;
 
 export const LEVELS: readonly GameLevel[] = [
   { index: 0, label: 'Niveau 1', shortLabel: 'Niv. 1', targetCount: 2, defaultTimerSeconds: 20, isFinale: false },

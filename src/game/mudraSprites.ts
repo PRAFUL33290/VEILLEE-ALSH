@@ -19,7 +19,7 @@ interface NormalizedCropRect {
 
 /**
  * Exact normalized bounding boxes on /assets/aistudio/IMG_4978_103a6d1d.jpeg (1179 x 1916)
- * for the 12 Mudras in the 5-column x 6-row "Asamyuta Hastas" chart.
+ * for the 11 Mudras in the 5-column x 6-row "Asamyuta Hastas" chart.
  * Each box tightly encloses the hand gesture while stopping strictly above the printed label.
  */
 const MUDRA_CROP_RECTS: Record<string, NormalizedCropRect> = {
@@ -34,18 +34,15 @@ const MUDRA_CROP_RECTS: Record<string, NormalizedCropRect> = {
   Shikhara: { x0: 0.798, y0: 0.252, x1: 0.968, y1: 0.376 },
 
   // Row 2
+  Kapitha: { x0: 0.035, y0: 0.408, x1: 0.215, y1: 0.535 },
   Suchi: { x0: 0.800, y0: 0.403, x1: 0.968, y1: 0.535 },
 
   // Row 3
   Chandrakala: { x0: 0.030, y0: 0.558, x1: 0.220, y1: 0.688 },
-  Padmakosha: { x0: 0.238, y0: 0.564, x1: 0.405, y1: 0.687 },
-
-  // Row 4
-  Alapadma: { x0: 0.220, y0: 0.712, x1: 0.410, y1: 0.840 },
+  Sarpashirsha: { x0: 0.415, y0: 0.560, x1: 0.595, y1: 0.687 },
 
   // Row 5 (bottom)
   Mukula: { x0: 0.420, y0: 0.866, x1: 0.590, y1: 0.969 },
-  Trishula: { x0: 0.805, y0: 0.861, x1: 0.962, y1: 0.973 },
 };
 
 /**

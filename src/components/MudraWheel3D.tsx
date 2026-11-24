@@ -356,7 +356,7 @@ function FallbackWheelSVG({
     <div
       className="relative flex h-full w-full items-center justify-center select-none pointer-events-none"
       role="img"
-      aria-label="Roue interactive des 12 mudras"
+      aria-label={`Roue interactive des ${SECTOR_COUNT} mudras`}
     >
       {/* Fixed top pointer */}
       <div
@@ -1574,7 +1574,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
             ? 'La roue tourne — touchez-la pour l’arrêter à la main sans valider'
             : canSpin
               ? 'Tourner ou lancer la roue des mudras à la main'
-              : 'Tourner librement la roue des 12 mudras à la main'
+              : `Tourner librement la roue des ${SECTOR_COUNT} mudras à la main`
         }
         onKeyDown={(e) => {
           if ((e.key === 'Enter' || e.key === ' ') && canSpin) {
