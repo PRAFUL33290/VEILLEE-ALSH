@@ -467,7 +467,7 @@ export function HomeScreen({
         </ol>
       </section>
 
-      {/* Complete Showcase Grid of All 12 Mudras */}
+      {/* Complete Showcase Grid of All Mudras */}
       <section aria-labelledby="all-mudras-heading" className="flex flex-col gap-4 pb-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2 px-1">
           <h2
@@ -481,7 +481,7 @@ export function HomeScreen({
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 sm:gap-4 md:grid-cols-4 lg:grid-cols-6">
+        <div className="flex flex-wrap justify-center gap-3.5 sm:gap-4">
           {MUDRAS.map((mudra, idx) => {
             const sprite = mudraSprites[mudra.id];
             const indexLabel = String(idx + 1).padStart(2, '0');
@@ -492,7 +492,7 @@ export function HomeScreen({
                 type="button"
                 onClick={() => setZoomedIndex(idx)}
                 aria-label={`Afficher le mudra ${mudra.name.toUpperCase()} en plein écran`}
-                className="group flex flex-col items-center rounded-2xl border border-[#F5B324]/35 bg-[#3B050A]/88 p-3.5 text-center shadow-md shadow-black/25 transition-all duration-150 hover:-translate-y-0.5 hover:border-[#FCD34D] hover:bg-[#52080F] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                className="group flex w-[calc(50%-0.45rem)] sm:w-[calc(33.333%-0.7rem)] md:w-[calc(25%-0.75rem)] lg:w-[calc(16.666%-0.85rem)] flex-col items-center rounded-2xl border border-[#F5B324]/35 bg-[#3B050A]/88 p-3.5 text-center shadow-md shadow-black/25 transition-all duration-150 hover:-translate-y-0.5 hover:border-[#FCD34D] hover:bg-[#52080F] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
               >
                 <div className="mb-2 flex w-full items-center justify-between text-xs font-extrabold tabular-nums">
                   <span className="text-[#FCD34D]/85">{indexLabel}</span>

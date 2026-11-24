@@ -211,6 +211,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpandedView, setIsExpandedView] = useState(false);
   const [showFinaleBanner, setShowFinaleBanner] = useState(true);
+  const [isFinaleValidated, setIsFinaleValidated] = useState(false);
   const [mudraSprites, setMudraSprites] = useState<Record<number, MudraSpriteAsset>>({});
   const [zoomedMudraIndex, setZoomedMudraIndex] = useState<number | null>(null);
   const [activeScreen, setActiveScreen] = useState<'home' | 'game'>('home');
@@ -341,7 +342,8 @@ export default function App() {
   const targetCount = currentLevel.targetCount;
   const maxFinaleCount = LEVELS[LEVELS.length - 1].targetCount; // 7
   const hasReachedLevelTarget = sequence.length >= targetCount;
-  const isFinaleCompleted = currentLevel.isFinale && sequence.length >= maxFinaleCount;
+  const hasDrawnFinaleMudras = currentLevel.isFinale && sequence.length >= maxFinaleCount;
+  const isFinaleCompleted = hasDrawnFinaleMudras && isFinaleValidated;
   const isAllLevelsEvaluated =
     countEvaluatedLevels(families[0].levelResults) === LEVELS.length &&
     countEvaluatedLevels(families[1].levelResults) === LEVELS.length;
@@ -353,6 +355,7 @@ export default function App() {
   const isAutoRespinPending = duplicateNotice !== null;
   const isWheelBusy = isSpinning || isAutoRespinPending;
   const canAdvanceLevel = hasReachedLevelTarget && !currentLevel.isFinale && !isWheelBusy;
+  const canValidateFinale = hasDrawnFinaleMudras && !isFinaleValidated && !isWheelBusy;
   const canSpin = !isWheelBusy && !hasReachedLevelTarget;
   const familyADisplayName = getDisplayFamilyName(families[0].name, 0);
   const familyBDisplayName = getDisplayFamilyName(families[1].name, 1);
@@ -653,6 +656,7 @@ export default function App() {
   }, [ensureDuelClockStarted]);
 
   const handleSpinInterrupt = useCallback(() => {
+    mudraAudio.stopSpinFairy();
     if (autoRespinTimerRef.current !== null) {
       window.clearTimeout(autoRespinTimerRef.current);
       autoRespinTimerRef.current = null;
@@ -698,15 +702,20 @@ export default function App() {
       sequenceRef.current = next;
       setSequence(next);
 
-      if (currentLevel.isFinale && next.length >= maxFinaleCount) {
-        setShowFinaleBanner(true);
-        mudraAudio.playFinaleCelebration();
-      } else {
-        mudraAudio.playMudraLand();
-      }
+      // Always wait for the host to explicitly validate the Finale before launching the victory celebration
+      mudraAudio.playMudraLand();
     },
-    [currentLevel.isFinale, maxFinaleCount, launchWheelSpin],
+    [launchWheelSpin],
   );
+
+  const handleValidateFinale = useCallback(() => {
+    mudraAudio.unlock();
+    if (!canValidateFinale) return;
+    setIsFinaleValidated(true);
+    setShowFinaleBanner(true);
+    setTimerStatus((prev) => (prev === 'running' ? 'paused' : prev));
+    mudraAudio.playFinaleCelebration();
+  }, [canValidateFinale]);
 
   const handleAdvanceLevel = useCallback(() => {
     mudraAudio.unlock();
@@ -747,7 +756,10 @@ export default function App() {
     const next = sequenceRef.current.slice(0, -1);
     sequenceRef.current = next;
     setSequence(next);
-  }, [duplicateNotice]);
+    if (next.length < maxFinaleCount) {
+      setIsFinaleValidated(false);
+    }
+  }, [duplicateNotice, maxFinaleCount]);
 
   const showSaveToast = useCallback((message: string) => {
     setSaveFeedback(message);
@@ -883,6 +895,7 @@ export default function App() {
     setIsSequenceHidden(false);
     setZoomedMudraIndex(null);
     setShowFinaleBanner(true);
+    setIsFinaleValidated(false);
   }, []);
 
   const handleSignInServer = useCallback(async () => {
@@ -1107,6 +1120,7 @@ export default function App() {
 
   const handleReturnToHome = useCallback(() => {
     if (isSpinningRef.current || duplicateNotice !== null) return;
+    mudraAudio.stopSpinFairy();
     setZoomedMudraIndex(null);
     setActiveScreen('home');
     window.scrollTo(0, 0);
@@ -1380,7 +1394,12 @@ export default function App() {
               ) : isFinaleCompleted ? (
                 <>
                   <Trophy className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                  <span>FINALE TERMINÉE (7 MUDRAS)</span>
+                  <span>FINALE VALIDÉE (7 MUDRAS)</span>
+                </>
+              ) : hasDrawnFinaleMudras ? (
+                <>
+                  <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                  <span>FINALE PRÊTE (7 MUDRAS)</span>
                 </>
               ) : hasReachedLevelTarget ? (
                 <>
@@ -1405,6 +1424,17 @@ export default function App() {
               >
                 <span>NIVEAU RÉUSSI : AJOUTER UN MUDRA</span>
                 <ArrowRight className="h-5 w-5 shrink-0" aria-hidden="true" />
+              </button>
+            )}
+
+            {canValidateFinale && (
+              <button
+                type="button"
+                onClick={handleValidateFinale}
+                className="animate-lotus-reveal inline-flex w-full min-h-[58px] items-center justify-center gap-2.5 rounded-2xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] px-6 py-3.5 text-base sm:text-lg font-extrabold uppercase tracking-wide text-[#2B0508] shadow-lg shadow-black/35 transition-all duration-150 hover:from-[#FCD34D] hover:to-[#EAB308] active:scale-[0.985] cursor-pointer focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/55"
+              >
+                <Trophy className="h-5 w-5 shrink-0" aria-hidden="true" />
+                <span>VALIDER LA FINALE</span>
               </button>
             )}
 

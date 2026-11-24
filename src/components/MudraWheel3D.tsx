@@ -560,6 +560,12 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         st.lastPegBucket = Math.floor((startRot + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
         st.landingGlowTime = 0;
 
+        // Launch enchanting fairy spin soundscape scaled to initial angular speed
+        const initialTotalDelta = Math.abs(targetRot - startRot);
+        const initialSpeed =
+          (easePower * initialTotalDelta) / Math.max(0.1, durationMs / 1000);
+        mudraAudio.startSpinFairy(Math.min(1, Math.max(0.3, initialSpeed / 20)));
+
         if (useFallback) {
           const stepFallback = () => {
             const now = performance.now();
@@ -569,16 +575,18 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
             const rot = st.startRotationZ + (st.targetRotationZ - st.startRotationZ) * eased;
             st.currentRotationZ = rot;
 
+            const totalAbsDelta = Math.abs(st.targetRotationZ - st.startRotationZ);
+            const durationSec = Math.max(0.1, st.durationMs / 1000);
+            const instSpeed =
+              ((st.easePower * totalAbsDelta) / durationSec) *
+              Math.pow(1 - t, Math.max(0, st.easePower - 1));
+            const speedFactor = Math.min(1, Math.max(0.04, instSpeed / 20));
+            mudraAudio.updateSpinFairy(speedFactor);
+
             const pegBucket = Math.floor((rot + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
             if (pegBucket !== st.lastPegBucket) {
               st.lastPegBucket = pegBucket;
-              const totalAbsDelta = Math.abs(st.targetRotationZ - st.startRotationZ);
-              const durationSec = Math.max(0.1, st.durationMs / 1000);
-              const instSpeed =
-                ((st.easePower * totalAbsDelta) / durationSec) *
-                Math.pow(1 - t, Math.max(0, st.easePower - 1));
-              const speedFactor = Math.min(1, Math.max(0.06, instSpeed / 20));
-              mudraAudio.playTick(speedFactor);
+              mudraAudio.playTick(Math.max(0.06, speedFactor));
             }
 
             setFallbackRotationZ(rot);
@@ -589,6 +597,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
               st.active = false;
               st.currentRotationZ = st.targetRotationZ;
               setFallbackRotationZ(st.targetRotationZ);
+              mudraAudio.stopSpinFairy();
               if (st.countsForSequence) {
                 const verified = getSectorIndexAtRotation(st.currentRotationZ);
                 onSpinCompleteRef.current(verified);
@@ -639,6 +648,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           st.active = false;
           st.countsForSequence = false;
           st.landingGlowTime = 0;
+          mudraAudio.stopSpinFairy();
           cancelAnimationFrame(fallbackFrameRef.current);
           onSpinInterruptRef.current?.();
           if (!useFallback) {
@@ -892,6 +902,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
     useEffect(() => {
       return () => {
         cancelAnimationFrame(fallbackFrameRef.current);
+        mudraAudio.stopSpinFairy();
       };
     }, []);
 
@@ -1170,8 +1181,8 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       pegsMesh.computeBoundingSphere();
       rotorGroup.add(pegsMesh);
 
-      // Part 6: 24 Bollywood Marquee Jewel Studs embedded around Outer Gold Bezel
-      const jewelCount = 24;
+      // Part 6: Symmetrical Bollywood Marquee Jewel Studs (2 per sector) embedded around Outer Gold Bezel
+      const jewelCount = SECTOR_COUNT * 2;
       const jewelGeo = trackGeo(new THREE.SphereGeometry(0.048, 14, 14));
       const jewelMat = trackMat(
         new THREE.MeshStandardMaterial({
@@ -1189,7 +1200,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         new THREE.Color('#FDE68A'),
       ];
       for (let i = 0; i < jewelCount; i++) {
-        const angle = (i / jewelCount) * TWO_PI;
+        const angle = Math.PI / 2 - i * (SECTOR_ANGLE / 2);
         const jr = WHEEL_RADIUS + 0.08;
         dummy.position.set(Math.cos(angle) * jr, Math.sin(angle) * jr, 0.265);
         dummy.scale.set(1, 1, 0.65);
@@ -1426,12 +1437,14 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
           const instSpeed =
             ((st.easePower * totalAbsDelta) / durationSec) *
             Math.pow(1 - t, Math.max(0, st.easePower - 1));
+          const liveSpeedFactor = Math.min(1, Math.max(0.04, instSpeed / 20));
+          mudraAudio.updateSpinFairy(liveSpeedFactor);
 
           // Detect peg boundary crossing at 12 o'clock (works clockwise & counter-clockwise)
           const pegBucket = Math.floor((rotZ + SECTOR_ANGLE / 2) / SECTOR_ANGLE);
           if (pegBucket !== st.lastPegBucket) {
             st.lastPegBucket = pegBucket;
-            const speedFactor = Math.min(1, Math.max(0.06, instSpeed / 20));
+            const speedFactor = Math.max(0.06, liveSpeedFactor);
             const clapperDir = st.targetRotationZ < st.startRotationZ ? 1 : -1;
             st.pointerVel = THREE.MathUtils.clamp(
               st.pointerVel + clapperDir * (3.4 + speedFactor * 8.6),
@@ -1455,6 +1468,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
             st.currentRotationZ = st.targetRotationZ;
             rotorGroup.rotation.z = st.targetRotationZ;
             st.landingGlowTime = 0.95;
+            mudraAudio.stopSpinFairy();
             if (st.countsForSequence) {
               const verifiedSector = getSectorIndexAtRotation(st.currentRotationZ);
               onSpinCompleteRef.current(verifiedSector);
