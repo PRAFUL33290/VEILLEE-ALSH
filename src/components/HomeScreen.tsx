@@ -11,6 +11,7 @@ import {
   Play,
   PlusCircle,
   Swords,
+  Trash2,
   Users,
 } from 'lucide-react';
 import { LEVELS, MUDRAS } from '../game/mudras';
@@ -21,6 +22,7 @@ import accueilHeroImg from '../assets/images/accueil_defi_mudras_1795498540323.j
 interface HomeScreenProps {
   families: [DuelFamilySlot, DuelFamilySlot];
   onRenameFamily: (id: 0 | 1, name: string) => void;
+  onClearFamily: (id: 0 | 1) => void;
   mudraSprites: Record<number, MudraSpriteAsset>;
   hasActiveGame: boolean;
   savedDuelsCount: number;
@@ -32,6 +34,7 @@ interface HomeScreenProps {
 export function HomeScreen({
   families,
   onRenameFamily,
+  onClearFamily,
   mudraSprites,
   hasActiveGame,
   savedDuelsCount,
@@ -79,6 +82,15 @@ export function HomeScreen({
     window.setTimeout(() => {
       inputRefs.current[id]?.focus();
     }, 0);
+  };
+
+  const handleDeleteFamily = (id: 0 | 1) => {
+    setLockedNames((prev) => {
+      const next: [boolean, boolean] = [prev[0], prev[1]];
+      next[id] = false;
+      return next;
+    });
+    onClearFamily(id);
   };
 
   useEffect(() => {
@@ -284,16 +296,29 @@ export function HomeScreen({
                         {displayName}
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleEditFamilyName(team.id)}
-                      aria-label={`Modifier le nom de ${displayName}`}
-                      title="Modifier le nom"
-                      className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-[#F5B324]/35 bg-[#3B050A] px-2.5 py-1 text-xs font-bold text-[#FCD34D] transition-colors hover:border-[#FCD34D] hover:bg-[#5E0A12] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
-                    >
-                      <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span>Modifier</span>
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleEditFamilyName(team.id)}
+                        aria-label={`Modifier le nom de ${displayName}`}
+                        title="Modifier le nom"
+                        className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-[#F5B324]/35 bg-[#3B050A] px-2.5 py-1 text-xs font-bold text-[#FCD34D] transition-colors hover:border-[#FCD34D] hover:bg-[#5E0A12] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                      >
+                        <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Modifier</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteFamily(team.id)}
+                        aria-label={`Supprimer ${displayName}`}
+                        title="Supprimer cette famille"
+                        className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-[#FCA5A5]/45 bg-[#5C0810] px-2.5 py-1 text-xs font-bold text-[#FECACA] transition-colors hover:border-[#FCA5A5] hover:bg-[#7F1D1D] hover:text-white cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Supprimer</span>
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <form
@@ -324,13 +349,24 @@ export function HomeScreen({
                       className="min-h-[46px] min-w-0 flex-1 rounded-xl border border-[#F5B324]/40 bg-[#1E0205] px-3.5 py-2 text-sm sm:text-base font-extrabold uppercase tracking-wide text-[#FFF8EA] transition-colors focus:border-[#FCD34D] focus:bg-[#2E0408] focus:outline-none focus:ring-2 focus:ring-[#FCD34D]/50"
                     />
                     {hasTypedName && (
-                      <button
-                        type="submit"
-                        className="inline-flex min-h-[46px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-[#FCD34D]/85 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-4 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-all hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
-                      >
-                        <Check className="h-4 w-4 shrink-0 text-[#FEF08A]" aria-hidden="true" />
-                        <span>ENREGISTRER</span>
-                      </button>
+                      <>
+                        <button
+                          type="submit"
+                          className="inline-flex min-h-[46px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-[#FCD34D]/85 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-4 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-all hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                        >
+                          <Check className="h-4 w-4 shrink-0 text-[#FEF08A]" aria-hidden="true" />
+                          <span>ENREGISTRER</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteFamily(team.id)}
+                          aria-label={`Supprimer la famille n°${team.id + 1}`}
+                          title="Supprimer cette famille"
+                          className="inline-flex min-h-[46px] min-w-[46px] shrink-0 items-center justify-center rounded-xl border border-[#FCA5A5]/45 bg-[#5C0810] text-[#FECACA] transition-colors hover:border-[#FCA5A5] hover:bg-[#7F1D1D] hover:text-white cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
                     )}
                   </form>
                 )}
@@ -482,6 +518,10 @@ export function HomeScreen({
                   {mudra.name.toUpperCase()}
                 </span>
 
+                <span className="mt-0.5 w-full truncate text-xs sm:text-sm font-semibold text-[#FDE68A]/90">
+                  {mudra.meaningFr}
+                </span>
+
                 <span
                   className="mt-2 h-1 w-10 rounded-full"
                   style={{ backgroundColor: mudra.colorHex }}
@@ -541,6 +581,9 @@ export function HomeScreen({
               >
                 {zoomedMudra.name.toUpperCase()}
               </h2>
+              <p className="mt-1.5 text-lg sm:text-2xl font-bold text-[#FDE68A]">
+                {zoomedMudra.meaningFr}
+              </p>
               <span
                 className="mt-3 h-1.5 w-24 rounded-full"
                 style={{ backgroundColor: zoomedMudra.colorHex }}

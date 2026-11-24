@@ -769,6 +769,21 @@ export default function App() {
     setHasUnsavedDuelChanges(true);
   }, []);
 
+  const handleClearFamily = useCallback((id: 0 | 1) => {
+    setFamilies((prev) => {
+      const next: [DuelFamilySlot, DuelFamilySlot] = [prev[0], prev[1]];
+      next[id] = {
+        id,
+        name: '',
+        outcome: 'pending',
+        levelResults: createEmptyLevelResults(),
+        mudrasReached: null,
+        elapsedSec: null,
+      };
+      return next;
+    });
+  }, []);
+
   const handleSetFamilyLevelResult = useCallback(
     (id: 0 | 1, targetLevelIdx: number, status: LevelAttemptStatus) => {
       mudraAudio.unlock();
@@ -1256,6 +1271,7 @@ export default function App() {
         <HomeScreen
           families={families}
           onRenameFamily={handleRenameFamily}
+          onClearFamily={handleClearFamily}
           mudraSprites={mudraSprites}
           hasActiveGame={hasActiveGame}
           savedDuelsCount={savedDuels.length}
@@ -1694,9 +1710,14 @@ export default function App() {
                               />
                             </div>
                           )}
-                          <span className="truncate text-base sm:text-lg font-extrabold uppercase tracking-wide text-[#FFF8EA]">
-                            {entry.mudra.name.toUpperCase()}
-                          </span>
+                          <div className="flex flex-col min-w-0">
+                            <span className="truncate text-base sm:text-lg font-extrabold uppercase leading-tight tracking-wide text-[#FFF8EA]">
+                              {entry.mudra.name.toUpperCase()}
+                            </span>
+                            <span className="truncate text-xs sm:text-sm font-semibold text-[#FDE68A]/90">
+                              {entry.mudra.meaningFr}
+                            </span>
+                          </div>
                         </div>
 
                         <div className="flex items-center gap-2.5 shrink-0">
@@ -1913,6 +1934,9 @@ export default function App() {
                 >
                   {zoomedEntry.mudra.name.toUpperCase()}
                 </h2>
+                <p className="mt-1.5 text-lg sm:text-2xl font-bold text-[#FDE68A]">
+                  {zoomedEntry.mudra.meaningFr}
+                </p>
                 <span
                   className="mt-3 h-1.5 w-24 rounded-full"
                   style={{ backgroundColor: zoomedEntry.mudra.colorHex }}

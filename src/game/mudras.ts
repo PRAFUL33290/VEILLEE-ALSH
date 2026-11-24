@@ -1,6 +1,7 @@
 export interface MudraSector {
   readonly id: number;
   readonly name: string;
+  readonly meaningFr: string;
   readonly colorHex: string;
   readonly accentHex: string;
   readonly textHex: string;
@@ -57,26 +58,27 @@ const SECTOR_THEMES = [
   },
 ] as const;
 
-const MUDRA_NAMES = [
-  'Pataka',
-  'Tripataka',
-  'Kartharimukha',
-  'Ardhachandra',
-  'Mushti',
-  'Shikhara',
-  'Suchi',
-  'Chandrakala',
-  'Padmakosha',
-  'Alapadma',
-  'Mukula',
-  'Trishula',
+const MUDRA_DEFINITIONS = [
+  { name: 'Pataka', meaningFr: 'Drapeau' },
+  { name: 'Tripataka', meaningFr: 'Drapeau en trois' },
+  { name: 'Kartharimukha', meaningFr: 'Ciseaux' },
+  { name: 'Ardhachandra', meaningFr: 'Demi-lune' },
+  { name: 'Mushti', meaningFr: 'Poing fermé' },
+  { name: 'Shikhara', meaningFr: 'Sommet, pic' },
+  { name: 'Suchi', meaningFr: 'Aiguille' },
+  { name: 'Chandrakala', meaningFr: 'Croissant de lune' },
+  { name: 'Padmakosha', meaningFr: 'Bouton de lotus' },
+  { name: 'Alapadma', meaningFr: 'Lotus épanoui' },
+  { name: 'Mukula', meaningFr: 'Fleur en bourgeon' },
+  { name: 'Trishula', meaningFr: 'Trident' },
 ] as const;
 
-export const MUDRAS: readonly MudraSector[] = MUDRA_NAMES.map((name, index) => {
+export const MUDRAS: readonly MudraSector[] = MUDRA_DEFINITIONS.map((def, index) => {
   const theme = SECTOR_THEMES[index % SECTOR_THEMES.length];
   return {
     id: index,
-    name,
+    name: def.name,
+    meaningFr: def.meaningFr,
     colorHex: theme.colorHex,
     accentHex: theme.accentHex,
     textHex: theme.textHex,
