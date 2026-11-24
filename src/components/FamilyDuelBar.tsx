@@ -25,7 +25,7 @@ import { formatElapsedTime } from './CountdownBanner';
 export type FamilyOutcome = 'pending' | 'complete' | 'partial';
 export type LevelAttemptStatus = 'pending' | 'passed' | 'failed';
 
-export const LEVEL_SHORT_CODES = ['N1', 'N2', 'N3', 'N4', 'N5', 'FIN'] as const;
+export const LEVEL_SHORT_CODES = ['N1', 'N2', 'N3', 'N4', 'N5', 'N6', 'FIN'] as const;
 
 export function createEmptyLevelResults(): LevelAttemptStatus[] {
   return LEVELS.map(() => 'pending');
@@ -258,67 +258,75 @@ export function FamilyDuelBar({
                 </div>
               </div>
 
-              {/* Compact Per-Level Validation (Current Level Réussi/Raté + 6-level strip) */}
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-[#F3D9A4] whitespace-nowrap shrink-0">
-                    {currentLevelLabel} :
+              {/* Finger-Friendly Per-Level Validation (Full-Width Large Réussi/Raté + 7-Level Strip) */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-[#FCD34D]">
+                    {currentLevelLabel}
                   </span>
-                  <div className="grid flex-1 grid-cols-2 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onSetFamilyLevelResult(
-                          team.id,
-                          currentLevelIndex,
-                          currentLvlStatus === 'passed' ? 'pending' : 'passed',
-                        )
-                      }
-                      aria-pressed={currentLvlStatus === 'passed'}
-                      className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wide transition-all active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
-                        currentLvlStatus === 'passed'
-                          ? 'border-[#6EE7B7] bg-[#065F46] text-[#ECFDF5] shadow-xs'
-                          : 'border-[#F5B324]/30 bg-[#3B050A] text-[#FFF8EA] hover:bg-[#4E0910] hover:border-[#6EE7B7]/80'
-                      }`}
-                    >
-                      <Check
-                        className={`h-3.5 w-3.5 shrink-0 ${
-                          currentLvlStatus === 'passed' ? 'text-[#6EE7B7]' : 'text-[#6EE7B7]/80'
-                        }`}
-                        aria-hidden="true"
-                      />
-                      <span>Réussi</span>
-                    </button>
+                  <span className="text-[11px] font-bold text-[#F3D9A4]/75">
+                    {currentLvlStatus === 'passed'
+                      ? 'Validé : Réussi'
+                      : currentLvlStatus === 'failed'
+                        ? 'Validé : Raté'
+                        : 'En attente'}
+                  </span>
+                </div>
 
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onSetFamilyLevelResult(
-                          team.id,
-                          currentLevelIndex,
-                          currentLvlStatus === 'failed' ? 'pending' : 'failed',
-                        )
-                      }
-                      aria-pressed={currentLvlStatus === 'failed'}
-                      className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wide transition-all active:scale-[0.985] cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
-                        currentLvlStatus === 'failed'
-                          ? 'border-[#FCA5A5] bg-[#7F1D1D] text-[#FEF2F2] shadow-xs'
-                          : 'border-[#F5B324]/30 bg-[#3B050A] text-[#F3D9A4] hover:bg-[#4E0910] hover:border-[#FCA5A5]/80'
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSetFamilyLevelResult(
+                        team.id,
+                        currentLevelIndex,
+                        currentLvlStatus === 'passed' ? 'pending' : 'passed',
+                      )
+                    }
+                    aria-pressed={currentLvlStatus === 'passed'}
+                    className={`inline-flex min-h-[60px] items-center justify-center gap-2 rounded-xl border-2 px-4 py-3 text-base sm:text-lg font-extrabold uppercase tracking-wide transition-all active:scale-[0.97] cursor-pointer whitespace-nowrap touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                      currentLvlStatus === 'passed'
+                        ? 'border-[#6EE7B7] bg-[#065F46] text-[#ECFDF5] shadow-md shadow-emerald-950/50'
+                        : 'border-[#6EE7B7]/45 bg-[#3B050A] text-[#FFF8EA] hover:bg-[#4E0910] hover:border-[#6EE7B7]'
+                    }`}
+                  >
+                    <Check
+                      className={`h-5 w-5 sm:h-6 sm:w-6 shrink-0 stroke-[2.75] ${
+                        currentLvlStatus === 'passed' ? 'text-[#6EE7B7]' : 'text-[#6EE7B7]/85'
                       }`}
-                    >
-                      <X
-                        className={`h-3.5 w-3.5 shrink-0 ${
-                          currentLvlStatus === 'failed' ? 'text-[#FCA5A5]' : 'text-[#F87171]/80'
-                        }`}
-                        aria-hidden="true"
-                      />
-                      <span>Raté</span>
-                    </button>
-                  </div>
+                      aria-hidden="true"
+                    />
+                    <span>Réussi</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSetFamilyLevelResult(
+                        team.id,
+                        currentLevelIndex,
+                        currentLvlStatus === 'failed' ? 'pending' : 'failed',
+                      )
+                    }
+                    aria-pressed={currentLvlStatus === 'failed'}
+                    className={`inline-flex min-h-[60px] items-center justify-center gap-2 rounded-xl border-2 px-4 py-3 text-base sm:text-lg font-extrabold uppercase tracking-wide transition-all active:scale-[0.97] cursor-pointer whitespace-nowrap touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                      currentLvlStatus === 'failed'
+                        ? 'border-[#FCA5A5] bg-[#991B1B] text-[#FEF2F2] shadow-md shadow-red-950/50'
+                        : 'border-[#FCA5A5]/40 bg-[#3B050A] text-[#F3D9A4] hover:bg-[#4E0910] hover:border-[#FCA5A5]'
+                    }`}
+                  >
+                    <X
+                      className={`h-5 w-5 sm:h-6 sm:w-6 shrink-0 stroke-[2.75] ${
+                        currentLvlStatus === 'failed' ? 'text-[#FCA5A5]' : 'text-[#F87171]/85'
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <span>Raté</span>
+                  </button>
                 </div>
 
                 <div
-                  className="grid grid-cols-6 gap-1"
+                  className="grid grid-cols-7 gap-1.5 pt-0.5"
                   role="group"
                   aria-label={`Suivi par niveau de ${displayName}`}
                 >
@@ -346,23 +354,23 @@ export function FamilyDuelBar({
                         }
                         title={`${displayName} · ${lvl.label} : ${statusLabel}`}
                         aria-label={`${displayName}, ${lvl.label} : ${statusLabel}`}
-                        className={`flex min-h-[34px] items-center justify-center gap-1 rounded-md border px-1 py-1 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                        className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 rounded-lg border px-1 py-1 transition-all active:scale-[0.96] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
                           status === 'passed'
                             ? 'border-[#6EE7B7]/75 bg-[#065F46]/80 text-[#ECFDF5]'
                             : status === 'failed'
                               ? 'border-[#FCA5A5]/70 bg-[#7F1D1D]/85 text-[#FEE2E2]'
-                              : 'border-[#F5B324]/25 bg-[#1E0205] text-[#F3D9A4]/70 hover:border-[#F5B324]/60 hover:text-[#FFF8EA]'
+                              : 'border-[#F5B324]/25 bg-[#1E0205] text-[#F3D9A4]/75 hover:border-[#F5B324]/60 hover:text-[#FFF8EA]'
                         } ${isCurrent ? 'ring-2 ring-[#FCD34D] ring-offset-1 ring-offset-[#260306]' : ''}`}
                       >
-                        <span className="text-[10px] font-extrabold leading-none tabular-nums">
+                        <span className="text-[11px] font-extrabold leading-none tabular-nums">
                           {shortCode}
                         </span>
                         {status === 'passed' ? (
-                          <Check className="h-3 w-3 shrink-0 text-[#6EE7B7]" aria-hidden="true" />
+                          <Check className="h-3.5 w-3.5 shrink-0 text-[#6EE7B7] stroke-[2.75]" aria-hidden="true" />
                         ) : status === 'failed' ? (
-                          <X className="h-3 w-3 shrink-0 text-[#FCA5A5]" aria-hidden="true" />
+                          <X className="h-3.5 w-3.5 shrink-0 text-[#FCA5A5] stroke-[2.75]" aria-hidden="true" />
                         ) : (
-                          <Minus className="h-2.5 w-2.5 shrink-0 opacity-45" aria-hidden="true" />
+                          <Minus className="h-3 w-3 shrink-0 opacity-45" aria-hidden="true" />
                         )}
                       </button>
                     );
@@ -522,7 +530,7 @@ export function DuelFinishFooter({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={() =>
@@ -532,13 +540,13 @@ export function DuelFinishFooter({
                       )
                     }
                     aria-pressed={team.outcome === 'complete'}
-                    className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wide transition-colors cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                    className={`inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border px-3.5 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide transition-colors cursor-pointer whitespace-nowrap touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
                       team.outcome === 'complete'
                         ? 'border-[#FEF08A] bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-white'
                         : 'border-[#F5B324]/35 bg-[#4A080F] text-[#FFF8EA] hover:bg-[#6E0D15] hover:border-[#FCD34D]'
                     }`}
                   >
-                    <Award className="h-3.5 w-3.5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                    <Award className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
                     <span>Image entière</span>
                   </button>
 
@@ -551,13 +559,13 @@ export function DuelFinishFooter({
                       )
                     }
                     aria-pressed={team.outcome === 'partial'}
-                    className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wide transition-colors cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                    className={`inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border px-3.5 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide transition-colors cursor-pointer whitespace-nowrap touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
                       team.outcome === 'partial'
                         ? 'border-[#FEF08A] bg-gradient-to-b from-[#D97706] to-[#B45309] text-[#220306]'
                         : 'border-[#F5B324]/35 bg-[#4A080F] text-[#FDE68A] hover:bg-[#6E0D15] hover:border-[#FCD34D]'
                     }`}
                   >
-                    <ImageIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <ImageIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
                     <span>Moitié (½)</span>
                   </button>
                 </div>
@@ -717,7 +725,7 @@ export function DuelFinishFooter({
                 <span>Performance enregistrée</span>
                 <span className="font-extrabold text-[#FCD34D]">
                   {rewardPreview.mudrasReached !== null &&
-                    `${rewardPreview.mudrasReached}/7 mudras`}
+                    `${rewardPreview.mudrasReached}/${LEVELS[LEVELS.length - 1].targetCount} mudras`}
                   {rewardPreview.mudrasReached !== null &&
                     rewardPreview.elapsedSec !== null &&
                     ' · '}

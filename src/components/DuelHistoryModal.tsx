@@ -371,7 +371,7 @@ export function DuelHistoryModal({
 
                             {/* Per-Level Breakdown Strip (editable inline) */}
                             <div
-                              className="grid grid-cols-6 gap-1"
+                              className="grid grid-cols-7 gap-1"
                               role="group"
                               aria-label={`Résultats par niveau de ${entry.name}`}
                             >

@@ -34,12 +34,13 @@ service cloud.firestore {
 
     function isValidLevelResults(arr) {
       return arr is list
-        && arr.size() == 6
+        && arr.size() >= 6
+        && arr.size() <= 7
         && arr.hasOnly(['pending', 'passed', 'failed']);
     }
 
     function isValidMudrasReached(val) {
-      return val is int && val >= -1 && val <= 7;
+      return val is int && val >= -1 && val <= 11;
     }
 
     function isValidElapsedSec(val) {

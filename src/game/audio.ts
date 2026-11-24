@@ -121,6 +121,7 @@ const BHUPALI_PHRASE_B: MelodyStep[] = [
 
 interface FairySpinAuraNodes {
   masterGain: GainNode;
+  tremoloGain: GainNode;
   filter: BiquadFilterNode;
   lfo: OscillatorNode;
   oscillators: OscillatorNode[];
@@ -142,6 +143,7 @@ class MudraAudioEngine {
   private lastTickMs = 0;
   private fairyStepIndex = 0;
   private fairyAura: FairySpinAuraNodes | null = null;
+  private globalUnlockBound = false;
 
   // Lookahead scheduler state for traditional Indian music
   private schedulerId: number | null = null;
@@ -149,6 +151,40 @@ class MudraAudioEngine {
   private currentStep = 0;
   private phraseIndex = 0;
   private readonly stepDurationSec = 60 / 102 / 4; // 102 BPM, 16th-note grid
+
+  constructor() {
+    this.bindGlobalUnlockListeners();
+  }
+
+  /**
+   * Keeps Web Audio alive & automatically recovers on iPadOS/iOS Safari whenever
+   * the context is suspended or put into the 'interrupted' state (e.g., after YouTube playback or app switch).
+   */
+  private bindGlobalUnlockListeners(): void {
+    if (typeof window === 'undefined' || this.globalUnlockBound) return;
+    this.globalUnlockBound = true;
+
+    const resumeIfNeeded = () => {
+      if (!this.ctx) {
+        this.unlock();
+        return;
+      }
+      if (this.ctx.state !== 'running') {
+        this.unlock();
+      }
+    };
+
+    window.addEventListener('touchstart', resumeIfNeeded, { capture: true, passive: true });
+    window.addEventListener('touchend', resumeIfNeeded, { capture: true, passive: true });
+    window.addEventListener('pointerdown', resumeIfNeeded, { capture: true, passive: true });
+    window.addEventListener('click', resumeIfNeeded, { capture: true, passive: true });
+    window.addEventListener('keydown', resumeIfNeeded, { capture: true, passive: true });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && this.ctx && this.ctx.state !== 'running') {
+        void this.ctx.resume().catch(() => {});
+      }
+    });
+  }
 
   public isMuted(): boolean {
     return this.muted;
@@ -164,19 +200,33 @@ class MudraAudioEngine {
       this.stopSpinFairy();
     }
     if (this.ctx && this.sfxGain) {
-      this.sfxGain.gain.setTargetAtTime(muted ? 0 : 1, this.ctx.currentTime, 0.02);
+      const now = this.ctx.currentTime;
+      this.sfxGain.gain.cancelScheduledValues(now);
+      this.sfxGain.gain.setTargetAtTime(muted ? 0 : 1.35, now, 0.02);
     }
   }
 
   /**
-   * Synchronously unlocks Web Audio on iPadOS / iOS Safari during any direct touch/click gesture.
+   * Synchronously unlocks & resumes Web Audio on iPadOS / iOS Safari during any direct touch/click gesture.
+   * Handles both 'suspended' and iOS-specific 'interrupted' AudioContext states.
    */
   public unlock(): void {
+    // Request playback audio session on iPadOS/iOS Safari 17+ so SFX bypass the silent switch
+    // and co-exist cleanly with embedded YouTube Music playback
+    try {
+      const nav = navigator as Navigator & { audioSession?: { type?: string } };
+      if (nav.audioSession && nav.audioSession.type !== 'playback') {
+        nav.audioSession.type = 'playback';
+      }
+    } catch {
+      // Unsupported browser or restricted iframe
+    }
+
     const ctx = this.ensureContext();
     if (!ctx) return;
 
-    if (ctx.state === 'suspended') {
-      void ctx.resume();
+    if (ctx.state !== 'running') {
+      void ctx.resume().catch(() => {});
     }
 
     // Play a 1-sample silent buffer once to guarantee iOS Safari unlocks hardware audio output
@@ -194,6 +244,16 @@ class MudraAudioEngine {
   private ensureContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
 
+    // Rebuild cleanly if the browser ever closed the AudioContext
+    if (this.ctx && this.ctx.state === 'closed') {
+      this.ctx = null;
+      this.sfxGain = null;
+      this.sfxShimmerBus = null;
+      this.musicMasterGain = null;
+      this.noiseBuffer = null;
+      this.fairyAura = null;
+    }
+
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
@@ -201,10 +261,19 @@ class MudraAudioEngine {
       if (!AudioCtx) return null;
       this.ctx = new AudioCtx();
 
+      // Master SFX limiter so boosted wheel & victory FX stay loud, punchy, and distortion-free
+      const sfxCompressor = this.ctx.createDynamicsCompressor();
+      sfxCompressor.threshold.value = -10;
+      sfxCompressor.knee.value = 14;
+      sfxCompressor.ratio.value = 4;
+      sfxCompressor.attack.value = 0.004;
+      sfxCompressor.release.value = 0.14;
+      sfxCompressor.connect(this.ctx.destination);
+
       // Dedicated SFX bus
       this.sfxGain = this.ctx.createGain();
-      this.sfxGain.gain.value = this.muted ? 0 : 1;
-      this.sfxGain.connect(this.ctx.destination);
+      this.sfxGain.gain.value = this.muted ? 0 : 1.35;
+      this.sfxGain.connect(sfxCompressor);
 
       // Enchanted palace shimmer bus for fairy chimes & Indian victory instruments
       this.sfxShimmerBus = this.ctx.createGain();
@@ -212,14 +281,14 @@ class MudraAudioEngine {
       this.sfxShimmerBus.connect(this.sfxGain);
 
       const sfxDelay = this.ctx.createDelay(0.5);
-      sfxDelay.delayTime.value = 0.19;
+      sfxDelay.delayTime.value = 0.18;
       const sfxFeedback = this.ctx.createGain();
-      sfxFeedback.gain.value = 0.28;
+      sfxFeedback.gain.value = 0.24;
       const sfxDelayLp = this.ctx.createBiquadFilter();
       sfxDelayLp.type = 'lowpass';
-      sfxDelayLp.frequency.value = 5400;
+      sfxDelayLp.frequency.value = 5600;
       const sfxWet = this.ctx.createGain();
-      sfxWet.gain.value = 0.24;
+      sfxWet.gain.value = 0.26;
 
       this.sfxShimmerBus.connect(sfxDelay);
       sfxDelay.connect(sfxDelayLp);
@@ -262,8 +331,9 @@ class MudraAudioEngine {
       this.noiseBuffer = buf;
     }
 
-    if (this.ctx.state === 'suspended') {
-      void this.ctx.resume();
+    // Resume BOTH 'suspended' and iOS/iPadOS 'interrupted' states
+    if (this.ctx.state !== 'running') {
+      void this.ctx.resume().catch(() => {});
     }
     return this.ctx;
   }
@@ -307,11 +377,11 @@ class MudraAudioEngine {
     const now = ctx.currentTime;
     this.musicMasterGain.gain.cancelScheduledValues(now);
     this.musicMasterGain.gain.setValueAtTime(Math.max(0.0001, this.musicMasterGain.gain.value), now);
-    this.musicMasterGain.gain.linearRampToValueAtTime(0.32, now + 0.45);
+    this.musicMasterGain.gain.linearRampToValueAtTime(0.32, now + 0.1);
 
     this.currentStep = 0;
     this.phraseIndex = 0;
-    this.nextStepTime = now + 0.06;
+    this.nextStepTime = now + 0.015;
 
     if (this.schedulerId !== null) {
       window.clearInterval(this.schedulerId);
@@ -614,18 +684,19 @@ class MudraAudioEngine {
       buzz.frequency.setValueAtTime(freq * 2.004, time);
     }
 
-    // Resonant sitar bridge ("jawari") filter sweep
-    filter.type = 'bandpass';
-    filter.Q.value = 2.6;
-    filter.frequency.setValueAtTime(Math.min(3800, freq * 4.5), time);
-    filter.frequency.exponentialRampToValueAtTime(Math.max(580, freq * 1.8), time + dur);
+    // Resonant sitar bridge ("jawari") bright lowpass sweep (preserves full fundamental body)
+    filter.type = 'lowpass';
+    filter.Q.value = 3.4;
+    filter.frequency.setValueAtTime(Math.min(4600, Math.max(900, freq * 5.2)), time);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(720, freq * 2.1), time + Math.max(0.05, dur));
 
+    const safeDur = Math.max(0.06, dur);
     gain.gain.setValueAtTime(0.001, time);
     gain.gain.linearRampToValueAtTime(vol, time + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0008, time + dur);
+    gain.gain.exponentialRampToValueAtTime(0.0008, time + safeDur);
 
     const buzzGain = ctx.createGain();
-    buzzGain.gain.value = 0.45;
+    buzzGain.gain.value = 0.5;
 
     osc.connect(filter);
     buzz.connect(buzzGain);
@@ -635,8 +706,8 @@ class MudraAudioEngine {
 
     osc.start(time);
     buzz.start(time);
-    osc.stop(time + dur + 0.03);
-    buzz.stop(time + dur + 0.03);
+    osc.stop(time + safeDur + 0.03);
+    buzz.stop(time + safeDur + 0.03);
   }
 
   /**
@@ -655,6 +726,7 @@ class MudraAudioEngine {
     const dest = targetNode ?? this.sfxShimmerBus;
     if (!ctx || !dest) return;
 
+    const safeDur = Math.max(0.12, dur);
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
     const lfo = ctx.createOscillator();
@@ -668,9 +740,9 @@ class MudraAudioEngine {
 
     if (glideFrom) {
       osc1.frequency.setValueAtTime(glideFrom, time);
-      osc1.frequency.exponentialRampToValueAtTime(freq, time + 0.055);
+      osc1.frequency.exponentialRampToValueAtTime(freq, time + 0.05);
       osc2.frequency.setValueAtTime(glideFrom * 1.003, time);
-      osc2.frequency.exponentialRampToValueAtTime(freq * 1.003, time + 0.055);
+      osc2.frequency.exponentialRampToValueAtTime(freq * 1.003, time + 0.05);
     } else {
       osc1.frequency.setValueAtTime(freq, time);
       osc2.frequency.setValueAtTime(freq * 1.003, time);
@@ -684,21 +756,24 @@ class MudraAudioEngine {
     lfoGain.connect(osc1.frequency);
     lfoGain.connect(osc2.frequency);
 
-    // Nasal double-reed formant peak around 1.8kHz + gentle lowpass roll-off
-    formant.type = 'bandpass';
+    // Nasal double-reed formant boost (peaking keeps full volume & richness!)
+    formant.type = 'peaking';
     formant.frequency.value = Math.min(2600, Math.max(1250, freq * 2.4));
-    formant.Q.value = 1.9;
+    formant.Q.value = 2.0;
+    formant.gain.value = 8;
 
     warmth.type = 'lowpass';
-    warmth.frequency.value = 3400;
+    warmth.frequency.value = 3600;
 
+    const attackEnd = time + 0.03;
+    const sustainEnd = time + Math.max(0.05, safeDur - 0.08);
     gain.gain.setValueAtTime(0.0005, time);
-    gain.gain.linearRampToValueAtTime(vol, time + 0.035);
-    gain.gain.setValueAtTime(vol * 0.88, time + Math.max(0.05, dur - 0.14));
-    gain.gain.exponentialRampToValueAtTime(0.0005, time + dur);
+    gain.gain.linearRampToValueAtTime(vol, attackEnd);
+    gain.gain.setValueAtTime(vol * 0.88, sustainEnd);
+    gain.gain.exponentialRampToValueAtTime(0.0005, time + safeDur);
 
     const sqMix = ctx.createGain();
-    sqMix.gain.value = 0.25;
+    sqMix.gain.value = 0.28;
 
     osc1.connect(formant);
     osc2.connect(sqMix);
@@ -710,9 +785,9 @@ class MudraAudioEngine {
     osc1.start(time);
     osc2.start(time);
     lfo.start(time);
-    osc1.stop(time + dur + 0.04);
-    osc2.stop(time + dur + 0.04);
-    lfo.stop(time + dur + 0.04);
+    osc1.stop(time + safeDur + 0.04);
+    osc2.stop(time + safeDur + 0.04);
+    lfo.stop(time + safeDur + 0.04);
   }
 
   private playBansuriNote(
@@ -727,6 +802,7 @@ class MudraAudioEngine {
     const dest = targetNode ?? this.musicMasterGain;
     if (!ctx || !dest) return;
 
+    const safeDur = Math.max(0.14, dur);
     const osc = ctx.createOscillator();
     const lfo = ctx.createOscillator();
     const lfoGain = ctx.createGain();
@@ -736,7 +812,7 @@ class MudraAudioEngine {
     osc.type = 'sine';
     if (glideFrom) {
       osc.frequency.setValueAtTime(glideFrom, time);
-      osc.frequency.exponentialRampToValueAtTime(freq, time + 0.09);
+      osc.frequency.exponentialRampToValueAtTime(freq, time + 0.08);
     } else {
       osc.frequency.setValueAtTime(freq, time);
     }
@@ -749,12 +825,14 @@ class MudraAudioEngine {
     lfoGain.connect(osc.frequency);
 
     lp.type = 'lowpass';
-    lp.frequency.value = 2400;
+    lp.frequency.value = 2600;
 
-    gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.linearRampToValueAtTime(vol, time + 0.075);
-    gain.gain.setValueAtTime(vol * 0.9, time + Math.max(0.11, dur - 0.15));
-    gain.gain.exponentialRampToValueAtTime(0.0005, time + dur);
+    const attackEnd = time + Math.min(0.065, safeDur * 0.35);
+    const sustainEnd = time + Math.max(safeDur * 0.55, safeDur - 0.09);
+    gain.gain.setValueAtTime(0.0005, time);
+    gain.gain.linearRampToValueAtTime(vol, attackEnd);
+    gain.gain.setValueAtTime(vol * 0.9, sustainEnd);
+    gain.gain.exponentialRampToValueAtTime(0.0005, time + safeDur);
 
     osc.connect(lp);
     lp.connect(gain);
@@ -762,8 +840,8 @@ class MudraAudioEngine {
 
     osc.start(time);
     lfo.start(time);
-    osc.stop(time + dur + 0.04);
-    lfo.stop(time + dur + 0.04);
+    osc.stop(time + safeDur + 0.04);
+    lfo.stop(time + safeDur + 0.04);
   }
 
   /**
@@ -780,6 +858,7 @@ class MudraAudioEngine {
     const dest = targetNode ?? this.sfxShimmerBus;
     if (!ctx || !dest) return;
 
+    const safeDur = Math.max(0.08, dur);
     const osc = ctx.createOscillator();
     const overtone = ctx.createOscillator();
     const overGain = ctx.createGain();
@@ -790,12 +869,12 @@ class MudraAudioEngine {
     osc.frequency.setValueAtTime(freq, time);
     overtone.frequency.setValueAtTime(freq * 2, time);
 
-    overGain.gain.setValueAtTime(0.28, time);
-    overGain.gain.exponentialRampToValueAtTime(0.01, time + Math.min(0.14, dur * 0.5));
+    overGain.gain.setValueAtTime(0.32, time);
+    overGain.gain.exponentialRampToValueAtTime(0.01, time + Math.min(0.16, safeDur * 0.55));
 
     gain.gain.setValueAtTime(0.0005, time);
-    gain.gain.linearRampToValueAtTime(vol, time + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.0005, time + dur);
+    gain.gain.linearRampToValueAtTime(vol, time + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0005, time + safeDur);
 
     osc.connect(gain);
     overtone.connect(overGain);
@@ -804,8 +883,8 @@ class MudraAudioEngine {
 
     osc.start(time);
     overtone.start(time);
-    osc.stop(time + dur + 0.03);
-    overtone.stop(time + dur + 0.03);
+    osc.stop(time + safeDur + 0.03);
+    overtone.stop(time + safeDur + 0.03);
   }
 
   // =========================================================================
@@ -824,93 +903,103 @@ class MudraAudioEngine {
     this.stopSpinFairy();
     this.fairyStepIndex = 0;
 
-    const now = ctx.currentTime;
-    const clampedSpeed = Math.min(1, Math.max(0.25, initialSpeed));
+    try {
+      const now = ctx.currentTime;
+      const clampedSpeed = Math.min(1, Math.max(0.25, initialSpeed));
 
-    // 1. Enchanted fairy harp / santoor ascending Raga Yaman sweep on launch
-    const launchRun = [
-      NOTE.C5,
-      NOTE.E5,
-      NOTE.Fs5,
-      NOTE.G5,
-      NOTE.B5,
-      NOTE.C6,
-      NOTE.E6,
-      NOTE.G6,
-    ];
-    launchRun.forEach((freq, idx) => {
-      this.playFairySparkleNote(
-        freq,
-        now + idx * 0.038,
-        0.42,
-        (0.042 + idx * 0.003) * clampedSpeed,
-        shimmer,
-      );
-    });
+      // 1. Enchanted fairy harp / santoor ascending Raga Yaman sweep on launch
+      const launchRun = [
+        NOTE.C5,
+        NOTE.E5,
+        NOTE.Fs5,
+        NOTE.G5,
+        NOTE.B5,
+        NOTE.C6,
+        NOTE.E6,
+        NOTE.G6,
+      ];
+      launchRun.forEach((freq, idx) => {
+        this.playFairySparkleNote(
+          freq,
+          now + idx * 0.036,
+          0.46,
+          (0.14 + idx * 0.012) * clampedSpeed,
+          shimmer,
+        );
+      });
 
-    // 2. Continuous dreamy shimmering fairy aura bed that follows wheel rotation speed
-    const masterGain = ctx.createGain();
-    masterGain.gain.setValueAtTime(0.0005, now);
-    masterGain.gain.linearRampToValueAtTime(0.068 * clampedSpeed, now + 0.16);
+      // 2. Continuous dreamy shimmering fairy aura bed that follows wheel rotation speed
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(0.0005, now);
+      masterGain.gain.linearRampToValueAtTime(0.16 * clampedSpeed, now + 0.14);
 
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(1400 + clampedSpeed * 1600, now);
-    filter.Q.value = 1.1;
+      // Dedicated positive-centered tremolo stage (never drives envelope negative!)
+      const tremoloGain = ctx.createGain();
+      tremoloGain.gain.setValueAtTime(1.0, now);
 
-    // Shimmering fairy tremolo LFO
-    const lfo = ctx.createOscillator();
-    const lfoGain = ctx.createGain();
-    lfo.type = 'sine';
-    lfo.frequency.setValueAtTime(5.5 + clampedSpeed * 4.5, now);
-    lfoGain.gain.value = 0.022;
-    lfo.connect(lfoGain);
-    lfoGain.connect(masterGain.gain);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(1900 + clampedSpeed * 2600, now);
+      filter.Q.value = 1.4;
 
-    // Ethereal Lydian/Yaman crystal chord (C5 + G5 + B5 + F#6 whisper)
-    const auraFreqs = [NOTE.C5, NOTE.G5, NOTE.B5, NOTE.Fs6];
-    const oscillators: OscillatorNode[] = [];
-    auraFreqs.forEach((f, idx) => {
-      const osc = ctx.createOscillator();
-      const oscGain = ctx.createGain();
-      osc.type = idx % 2 === 0 ? 'sine' : 'triangle';
-      osc.frequency.setValueAtTime(f * (1 + (idx - 1.5) * 0.0018), now);
-      oscGain.gain.value = idx === 3 ? 0.18 : 0.34;
-      osc.connect(oscGain);
-      oscGain.connect(filter);
-      osc.start(now);
-      oscillators.push(osc);
-    });
+      // Shimmering fairy tremolo LFO modulating tremoloGain around 1.0 (±0.22)
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      lfo.type = 'sine';
+      lfo.frequency.setValueAtTime(5.5 + clampedSpeed * 4.5, now);
+      lfoGain.gain.value = 0.22;
+      lfo.connect(lfoGain);
+      lfoGain.connect(tremoloGain.gain);
 
-    // Silky stardust air-shimmer noise layer
-    let noiseSrc: AudioBufferSourceNode | null = null;
-    if (this.noiseBuffer) {
-      noiseSrc = ctx.createBufferSource();
-      noiseSrc.buffer = this.noiseBuffer;
-      noiseSrc.loop = true;
-      const airBp = ctx.createBiquadFilter();
-      airBp.type = 'bandpass';
-      airBp.frequency.value = 5800;
-      airBp.Q.value = 3.2;
-      const airGain = ctx.createGain();
-      airGain.gain.value = 0.055;
-      noiseSrc.connect(airBp);
-      airBp.connect(airGain);
-      airGain.connect(masterGain);
-      noiseSrc.start(now);
+      // Ethereal Lydian/Yaman crystal chord (C5 + G5 + B5 + F#6 sparkle)
+      const auraFreqs = [NOTE.C5, NOTE.G5, NOTE.B5, NOTE.Fs6];
+      const oscillators: OscillatorNode[] = [];
+      auraFreqs.forEach((f, idx) => {
+        const osc = ctx.createOscillator();
+        const oscGain = ctx.createGain();
+        osc.type = idx % 2 === 0 ? 'sine' : 'triangle';
+        osc.frequency.setValueAtTime(f * (1 + (idx - 1.5) * 0.0018), now);
+        oscGain.gain.value = idx === 3 ? 0.22 : 0.34;
+        osc.connect(oscGain);
+        oscGain.connect(filter);
+        osc.start(now);
+        oscillators.push(osc);
+      });
+
+      // Silky stardust air-shimmer noise layer
+      let noiseSrc: AudioBufferSourceNode | null = null;
+      if (this.noiseBuffer) {
+        noiseSrc = ctx.createBufferSource();
+        noiseSrc.buffer = this.noiseBuffer;
+        noiseSrc.loop = true;
+        const airBp = ctx.createBiquadFilter();
+        airBp.type = 'bandpass';
+        airBp.frequency.value = 5400;
+        airBp.Q.value = 2.6;
+        const airGain = ctx.createGain();
+        airGain.gain.value = 0.12;
+        noiseSrc.connect(airBp);
+        airBp.connect(airGain);
+        airGain.connect(tremoloGain);
+        noiseSrc.start(now);
+      }
+
+      filter.connect(tremoloGain);
+      tremoloGain.connect(masterGain);
+      masterGain.connect(shimmer);
+      lfo.start(now);
+
+      this.fairyAura = {
+        masterGain,
+        tremoloGain,
+        filter,
+        lfo,
+        oscillators,
+        noiseSrc,
+      };
+    } catch {
+      this.fairyAura = null;
     }
-
-    filter.connect(masterGain);
-    masterGain.connect(shimmer);
-    lfo.start(now);
-
-    this.fairyAura = {
-      masterGain,
-      filter,
-      lfo,
-      oscillators,
-      noiseSrc,
-    };
   }
 
   /**
@@ -918,13 +1007,17 @@ class MudraAudioEngine {
    */
   public updateSpinFairy(speedFactor: number): void {
     if (!this.fairyAura || !this.ctx) return;
-    const now = this.ctx.currentTime;
-    const clamped = Math.min(1, Math.max(0.02, speedFactor));
-    const { masterGain, filter, lfo } = this.fairyAura;
+    try {
+      const now = this.ctx.currentTime;
+      const clamped = Math.min(1, Math.max(0.02, speedFactor));
+      const { masterGain, filter, lfo } = this.fairyAura;
 
-    masterGain.gain.setTargetAtTime(0.012 + clamped * 0.062, now, 0.08);
-    filter.frequency.setTargetAtTime(1100 + clamped * 2100, now, 0.08);
-    lfo.frequency.setTargetAtTime(3.2 + clamped * 6.5, now, 0.09);
+      masterGain.gain.setTargetAtTime(0.025 + clamped * 0.145, now, 0.08);
+      filter.frequency.setTargetAtTime(1400 + clamped * 3000, now, 0.08);
+      lfo.frequency.setTargetAtTime(3.2 + clamped * 6.5, now, 0.09);
+    } catch {
+      // Ignore audio update edge cases
+    }
   }
 
   /**
@@ -940,8 +1033,8 @@ class MudraAudioEngine {
     const now = ctx.currentTime;
     try {
       aura.masterGain.gain.cancelScheduledValues(now);
-      aura.masterGain.gain.setTargetAtTime(0.0001, now, 0.08);
-      const stopAt = now + 0.32;
+      aura.masterGain.gain.setTargetAtTime(0.0001, now, 0.07);
+      const stopAt = now + 0.3;
       aura.oscillators.forEach((osc) => {
         try {
           osc.stop(stopAt);
@@ -971,7 +1064,19 @@ class MudraAudioEngine {
   // =========================================================================
 
   /**
-   * Enchanted fairy bell-chime + soft golden brass peg tick on every sector crossing.
+   * Short crisp fairy sparkle cue when unmuting SFX so the host gets instant audio feedback.
+   */
+  public playUnmuteChime(): void {
+    const audio = this.getSfxContext();
+    if (!audio) return;
+    const { ctx, shimmer } = audio;
+    const now = ctx.currentTime;
+    this.playFairySparkleNote(NOTE.C6, now, 0.28, 0.22, shimmer);
+    this.playFairySparkleNote(NOTE.G6, now + 0.07, 0.36, 0.24, shimmer);
+  }
+
+  /**
+   * Enchanted fairy bell-chime + crisp golden brass peg tick on every sector crossing.
    * Cycles smoothly along the dreamy Raga Yaman fairy scale, shimmering as the wheel spins.
    */
   public playTick(speedFactor = 1): void {
@@ -983,39 +1088,43 @@ class MudraAudioEngine {
     if (!audio) return;
     const { ctx, out, shimmer } = audio;
 
-    const now = ctx.currentTime;
-    const clampedSpeed = Math.min(1, Math.max(0.05, speedFactor));
+    try {
+      const now = ctx.currentTime;
+      const clampedSpeed = Math.min(1, Math.max(0.05, speedFactor));
 
-    // 1. Subtle tactile golden-peg micro-click (keeps physical peg feedback super crisp)
-    const pegOsc = ctx.createOscillator();
-    const pegGain = ctx.createGain();
-    pegOsc.type = 'triangle';
-    pegOsc.frequency.setValueAtTime(520 + clampedSpeed * 280, now);
-    pegOsc.frequency.exponentialRampToValueAtTime(210, now + 0.024);
+      // 1. Crisp tactile golden-peg clapper click (clear physical wheel feedback)
+      const pegOsc = ctx.createOscillator();
+      const pegGain = ctx.createGain();
+      pegOsc.type = 'triangle';
+      pegOsc.frequency.setValueAtTime(560 + clampedSpeed * 320, now);
+      pegOsc.frequency.exponentialRampToValueAtTime(220, now + 0.028);
 
-    pegGain.gain.setValueAtTime(0.001, now);
-    pegGain.gain.linearRampToValueAtTime(0.045 + clampedSpeed * 0.03, now + 0.002);
-    pegGain.gain.exponentialRampToValueAtTime(0.001, now + 0.028);
+      pegGain.gain.setValueAtTime(0.001, now);
+      pegGain.gain.linearRampToValueAtTime(0.19 + clampedSpeed * 0.11, now + 0.002);
+      pegGain.gain.exponentialRampToValueAtTime(0.001, now + 0.032);
 
-    pegOsc.connect(pegGain);
-    pegGain.connect(out);
-    pegOsc.start(now);
-    pegOsc.stop(now + 0.032);
+      pegOsc.connect(pegGain);
+      pegGain.connect(out);
+      pegOsc.start(now);
+      pegOsc.stop(now + 0.038);
 
-    // 2. Sparkling fairy celesta / ghungroo chime stepping up and down Raga Yaman scale
-    const cycleLen = FAIRY_CHIME_SCALE.length * 2 - 2;
-    const pos = this.fairyStepIndex % cycleLen;
-    const scaleIdx = pos < FAIRY_CHIME_SCALE.length ? pos : cycleLen - pos;
-    this.fairyStepIndex += 1;
+      // 2. Sparkling fairy celesta / ghungroo chime stepping up and down Raga Yaman scale
+      const cycleLen = FAIRY_CHIME_SCALE.length * 2 - 2;
+      const pos = this.fairyStepIndex % cycleLen;
+      const scaleIdx = pos < FAIRY_CHIME_SCALE.length ? pos : cycleLen - pos;
+      this.fairyStepIndex += 1;
 
-    const chimeFreq = FAIRY_CHIME_SCALE[scaleIdx];
-    const chimeDur = 0.16 + (1 - clampedSpeed) * 0.22; // Lingers longer like stardust as wheel slows
-    const chimeVol = 0.055 + clampedSpeed * 0.035;
-    this.playFairySparkleNote(chimeFreq, now, chimeDur, chimeVol, shimmer);
+      const chimeFreq = FAIRY_CHIME_SCALE[scaleIdx];
+      const chimeDur = 0.2 + (1 - clampedSpeed) * 0.24; // Lingers longer like stardust as wheel slows
+      const chimeVol = 0.18 + clampedSpeed * 0.1;
+      this.playFairySparkleNote(chimeFreq, now, chimeDur, chimeVol, shimmer);
 
-    // Delicate ghungroo fairy dust sparkle on brisk spins
-    if (clampedSpeed > 0.28) {
-      this.playGhungroo(now, 0.022 * clampedSpeed, shimmer);
+      // Delicate ghungroo fairy dust sparkle on brisk spins
+      if (clampedSpeed > 0.25) {
+        this.playGhungroo(now, 0.065 * clampedSpeed, shimmer);
+      }
+    } catch {
+      // Ignore transient Web Audio scheduling edge cases
     }
   }
 
@@ -1031,14 +1140,15 @@ class MudraAudioEngine {
 
     const now = ctx.currentTime;
     // Warm Sitar Sa-Ga-Pa flourish
-    this.playSitarNote(NOTE.C5, now, 0.45, 0.14, NOTE.G4, shimmer);
-    this.playSitarNote(NOTE.E5, now + 0.06, 0.48, 0.13, undefined, shimmer);
-    this.playSitarNote(NOTE.G5, now + 0.12, 0.62, 0.15, NOTE.E5, shimmer);
+    this.playSitarNote(NOTE.C5, now, 0.48, 0.28, NOTE.G4, shimmer);
+    this.playSitarNote(NOTE.E5, now + 0.06, 0.52, 0.26, undefined, shimmer);
+    this.playSitarNote(NOTE.G5, now + 0.12, 0.66, 0.3, NOTE.E5, shimmer);
 
-    // Fairy stardust top sparkle
-    this.playFairySparkleNote(NOTE.C6, now + 0.14, 0.55, 0.09, shimmer);
-    this.playFairySparkleNote(NOTE.E6, now + 0.2, 0.5, 0.065, shimmer);
-    this.playGhungroo(now + 0.08, 0.055, shimmer);
+    // Fairy stardust top sparkle & Manjira ring
+    this.playFairySparkleNote(NOTE.C6, now + 0.14, 0.6, 0.24, shimmer);
+    this.playFairySparkleNote(NOTE.E6, now + 0.2, 0.55, 0.19, shimmer);
+    this.playManjira(now + 0.12, 0.14, shimmer);
+    this.playGhungroo(now + 0.08, 0.12, shimmer);
   }
 
   /**
@@ -1063,16 +1173,16 @@ class MudraAudioEngine {
       this.playSitarNote(
         freq,
         now + t,
-        idx === run.length - 1 ? 0.62 : 0.28,
-        0.13,
+        idx === run.length - 1 ? 0.65 : 0.3,
+        0.26,
         idx > 0 ? run[idx - 1].freq : undefined,
         shimmer,
       );
     });
-    this.playTablaBayan(now + 0.31, 0.24, true, shimmer);
-    this.playTablaDayan(now + 0.31, 0.18, false, shimmer);
-    this.playFairySparkleNote(NOTE.C6, now + 0.33, 0.55, 0.085, shimmer);
-    this.playGhungroo(now + 0.31, 0.07, shimmer);
+    this.playTablaBayan(now + 0.31, 0.42, true, shimmer);
+    this.playTablaDayan(now + 0.31, 0.32, false, shimmer);
+    this.playFairySparkleNote(NOTE.C6, now + 0.33, 0.6, 0.22, shimmer);
+    this.playGhungroo(now + 0.31, 0.14, shimmer);
   }
 
   /**
@@ -1090,19 +1200,19 @@ class MudraAudioEngine {
     const now = ctx.currentTime;
 
     // 1. Royal Tanpura resonant Sa-Pa drone foundation
-    this.playTanpuraString(NOTE.C3, now, 2.35, 0.16, shimmer);
-    this.playTanpuraString(NOTE.G3, now + 0.08, 2.25, 0.13, shimmer);
+    this.playTanpuraString(NOTE.C3, now, 2.35, 0.24, shimmer);
+    this.playTanpuraString(NOTE.G3, now + 0.08, 2.25, 0.2, shimmer);
 
     // 2. Celebratory Indian Tabla / Dholak victory cadence (Dha-Dha-Ti-Dha | Dha-Dhin-DHAAA!)
     const tablaHits: Array<{ t: number; bayan?: boolean; open?: boolean; dayan?: boolean; damped?: boolean; vol: number }> = [
-      { t: 0.0, bayan: true, open: true, dayan: true, damped: false, vol: 0.36 },
-      { t: 0.18, bayan: true, open: false, dayan: true, damped: false, vol: 0.26 },
-      { t: 0.34, dayan: true, damped: true, vol: 0.22 },
-      { t: 0.48, bayan: true, open: true, dayan: true, damped: false, vol: 0.34 },
-      { t: 0.66, dayan: true, damped: false, vol: 0.24 },
-      { t: 0.82, bayan: true, open: true, dayan: true, damped: false, vol: 0.38 },
-      { t: 0.96, dayan: true, damped: true, vol: 0.24 },
-      { t: 1.08, bayan: true, open: true, dayan: true, damped: false, vol: 0.42 },
+      { t: 0.0, bayan: true, open: true, dayan: true, damped: false, vol: 0.54 },
+      { t: 0.18, bayan: true, open: false, dayan: true, damped: false, vol: 0.4 },
+      { t: 0.34, dayan: true, damped: true, vol: 0.34 },
+      { t: 0.48, bayan: true, open: true, dayan: true, damped: false, vol: 0.5 },
+      { t: 0.66, dayan: true, damped: false, vol: 0.38 },
+      { t: 0.82, bayan: true, open: true, dayan: true, damped: false, vol: 0.56 },
+      { t: 0.96, dayan: true, damped: true, vol: 0.36 },
+      { t: 1.08, bayan: true, open: true, dayan: true, damped: false, vol: 0.62 },
     ];
     for (const hit of tablaHits) {
       if (hit.bayan) this.playTablaBayan(now + hit.t, hit.vol, Boolean(hit.open), shimmer);
@@ -1110,11 +1220,11 @@ class MudraAudioEngine {
     }
 
     // 3. Festive Ghungroo & Manjira temple cymbal sparkles
-    this.playGhungroo(now + 0.02, 0.09, shimmer);
-    this.playGhungroo(now + 0.48, 0.1, shimmer);
-    this.playGhungroo(now + 0.82, 0.11, shimmer);
-    this.playManjira(now + 0.48, 0.085, shimmer);
-    this.playManjira(now + 1.08, 0.12, shimmer);
+    this.playGhungroo(now + 0.02, 0.18, shimmer);
+    this.playGhungroo(now + 0.48, 0.2, shimmer);
+    this.playGhungroo(now + 0.82, 0.22, shimmer);
+    this.playManjira(now + 0.48, 0.19, shimmer);
+    this.playManjira(now + 1.08, 0.25, shimmer);
 
     // 4. Dazzling ascending Sitar Raga Bhupali "taan" (Sa Re Ga Pa Dha Sa' Re' Ga' Pa')
     const sitarTaan = [
@@ -1134,40 +1244,39 @@ class MudraAudioEngine {
         n.freq,
         now + n.t,
         n.dur,
-        idx === sitarTaan.length - 1 ? 0.2 : 0.15,
+        idx === sitarTaan.length - 1 ? 0.36 : 0.27,
         idx > 0 ? sitarTaan[idx - 1].freq : undefined,
         shimmer,
       );
     });
 
     // 5. Triumphant ceremonial Shehnai & Bansuri victory melody
-    this.playShehnaiNote(NOTE.G4, now + 0.18, 0.28, 0.14, NOTE.E4, shimmer);
-    this.playShehnaiNote(NOTE.A4, now + 0.36, 0.24, 0.14, NOTE.G4, shimmer);
-    this.playShehnaiNote(NOTE.C5, now + 0.52, 0.32, 0.16, NOTE.A4, shimmer);
-    this.playShehnaiNote(NOTE.D5, now + 0.78, 0.26, 0.16, NOTE.C5, shimmer);
-    this.playShehnaiNote(NOTE.E5, now + 0.94, 0.2, 0.16, NOTE.D5, shimmer);
-    this.playShehnaiNote(NOTE.C5, now + 1.08, 1.1, 0.14, NOTE.A4, shimmer);
+    this.playShehnaiNote(NOTE.G4, now + 0.18, 0.28, 0.22, NOTE.E4, shimmer);
+    this.playShehnaiNote(NOTE.A4, now + 0.36, 0.24, 0.22, NOTE.G4, shimmer);
+    this.playShehnaiNote(NOTE.C5, now + 0.52, 0.32, 0.25, NOTE.A4, shimmer);
+    this.playShehnaiNote(NOTE.D5, now + 0.78, 0.26, 0.25, NOTE.C5, shimmer);
+    this.playShehnaiNote(NOTE.E5, now + 0.94, 0.2, 0.25, NOTE.D5, shimmer);
+    this.playShehnaiNote(NOTE.C5, now + 1.08, 1.1, 0.23, NOTE.A4, shimmer);
 
     // Soaring Bansuri harmony on the grand resolution chord
-    this.playBansuriNote(NOTE.G5, now + 0.82, 0.35, 0.13, NOTE.E5, shimmer);
-    this.playBansuriNote(NOTE.C6, now + 1.08, 1.15, 0.15, NOTE.A5, shimmer);
+    this.playBansuriNote(NOTE.G5, now + 0.82, 0.35, 0.24, NOTE.E5, shimmer);
+    this.playBansuriNote(NOTE.C6, now + 1.08, 1.15, 0.28, NOTE.A5, shimmer);
 
     // Final fairy golden shimmer cascade over the victory chord
     [NOTE.C6, NOTE.E6, NOTE.G6, NOTE.C7].forEach((freq, idx) => {
-      this.playFairySparkleNote(freq, now + 1.1 + idx * 0.06, 0.95, 0.075, shimmer);
+      this.playFairySparkleNote(freq, now + 1.1 + idx * 0.06, 0.95, 0.18, shimmer);
     });
   }
 
   /**
-   * Festive Indian celebration fanfare on completing the 7-mudra Finale.
+   * Festive Indian celebration fanfare on completing the Finale.
    */
   public playFinaleCelebration(): void {
     this.playIndianVictoryFanfare();
   }
 
   /**
-   * Playful two-tone sitar bounce cue when the same Mudra lands twice in a row
-   * and triggers an automatic re-spin.
+   * Playful two-tone sitar bounce cue (kept for optional audio feedback).
    */
   public playDuplicateRespin(): void {
     this.stopSpinFairy();
@@ -1177,14 +1286,14 @@ class MudraAudioEngine {
     this.duckMusicTemporarily(0.6);
 
     const now = ctx.currentTime;
-    this.playSitarNote(NOTE.A4, now, 0.22, 0.14, undefined, shimmer);
-    this.playSitarNote(NOTE.G4, now + 0.13, 0.22, 0.13, NOTE.A4, shimmer);
-    this.playSitarNote(NOTE.C5, now + 0.28, 0.34, 0.15, NOTE.G4, shimmer);
-    this.playTablaDayan(now + 0.28, 0.16, false, shimmer);
+    this.playSitarNote(NOTE.A4, now, 0.22, 0.24, undefined, shimmer);
+    this.playSitarNote(NOTE.G4, now + 0.13, 0.22, 0.22, NOTE.A4, shimmer);
+    this.playSitarNote(NOTE.C5, now + 0.28, 0.34, 0.26, NOTE.G4, shimmer);
+    this.playTablaDayan(now + 0.28, 0.26, false, shimmer);
   }
 
   /**
-   * Subtle crisp countdown tick during the final 5 seconds of Time-Trial mode.
+   * Crisp countdown tick during the final 5 seconds of Time-Trial mode.
    */
   public playTimerTick(urgent = false): void {
     const audio = this.getSfxContext();
@@ -1200,7 +1309,7 @@ class MudraAudioEngine {
     osc.frequency.exponentialRampToValueAtTime(urgent ? 640 : 520, now + 0.06);
 
     gain.gain.setValueAtTime(0.001, now);
-    gain.gain.linearRampToValueAtTime(urgent ? 0.12 : 0.08, now + 0.005);
+    gain.gain.linearRampToValueAtTime(urgent ? 0.28 : 0.2, now + 0.005);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.075);
 
     osc.connect(gain);
@@ -1220,10 +1329,10 @@ class MudraAudioEngine {
 
     const now = ctx.currentTime;
     const tones = [
-      { freq: 392.0, t: 0, dur: 0.32, type: 'triangle' as OscillatorType, vol: 0.13 },
-      { freq: 329.63, t: 0.18, dur: 0.36, type: 'triangle' as OscillatorType, vol: 0.13 },
-      { freq: 261.63, t: 0.36, dur: 0.85, type: 'sine' as OscillatorType, vol: 0.16 },
-      { freq: 130.81, t: 0.36, dur: 0.95, type: 'triangle' as OscillatorType, vol: 0.12 },
+      { freq: 392.0, t: 0, dur: 0.32, type: 'triangle' as OscillatorType, vol: 0.28 },
+      { freq: 329.63, t: 0.18, dur: 0.36, type: 'triangle' as OscillatorType, vol: 0.28 },
+      { freq: 261.63, t: 0.36, dur: 0.85, type: 'sine' as OscillatorType, vol: 0.34 },
+      { freq: 130.81, t: 0.36, dur: 0.95, type: 'triangle' as OscillatorType, vol: 0.26 },
     ];
 
     tones.forEach(({ freq, t, dur, type, vol }) => {
@@ -1261,49 +1370,103 @@ class MudraAudioEngine {
     this.duckMusicTemporarily(0.9);
 
     const now = ctx.currentTime;
-    this.playSitarNote(NOTE.G4, now, 0.36, 0.14, NOTE.E4, shimmer);
-    this.playSitarNote(NOTE.A4, now + 0.13, 0.48, 0.14, NOTE.G4, shimmer);
-    this.playBansuriNote(NOTE.C5, now + 0.24, 0.58, 0.12, NOTE.A4, shimmer);
-    this.playTablaDayan(now, 0.16, false, shimmer);
-    this.playGhungroo(now + 0.24, 0.06, shimmer);
+    this.playSitarNote(NOTE.G4, now, 0.36, 0.28, NOTE.E4, shimmer);
+    this.playSitarNote(NOTE.A4, now + 0.13, 0.48, 0.28, NOTE.G4, shimmer);
+    this.playBansuriNote(NOTE.C5, now + 0.24, 0.58, 0.24, NOTE.A4, shimmer);
+    this.playTablaDayan(now, 0.3, false, shimmer);
+    this.playGhungroo(now + 0.24, 0.14, shimmer);
   }
 
   /**
-   * Punchy celebratory Indian victory riff when a family passes a level ("Réussi"),
-   * or a gentle descending bansuri cadence when marked failed ("Raté").
+   * Dry, snappy, direct sound cues when marking a family's level attempt as "Réussi" or "Raté".
+   * Routed straight to the dry SFX bus (no echo tail) for instant live-show feedback.
    */
   public playTeamLevelVerdict(passed: boolean): void {
     const audio = this.getSfxContext();
     if (!audio) return;
-    const { ctx, shimmer } = audio;
-    this.duckMusicTemporarily(passed ? 1.05 : 0.55);
+    const { ctx, out } = audio;
 
-    const now = ctx.currentTime;
-    if (passed) {
-      // Celebratory Indian mini-victory: Tabla Dha-Ti-Dha + Sitar/Shehnai Raga Bhupali flourish + Manjira!
-      this.playTablaBayan(now, 0.3, true, shimmer);
-      this.playTablaDayan(now, 0.22, false, shimmer);
-      this.playTablaDayan(now + 0.14, 0.18, true, shimmer);
-      this.playTablaBayan(now + 0.26, 0.34, true, shimmer);
-      this.playTablaDayan(now + 0.26, 0.24, false, shimmer);
+    try {
+      const now = ctx.currentTime;
+      if (passed) {
+        // Dry, punchy two-note rising chime ("DING-DING!") with tight percussive transient
+        const hits = [
+          { freq: NOTE.G5, start: now, dur: 0.12, vol: 0.34 },
+          { freq: NOTE.C6, start: now + 0.072, dur: 0.22, vol: 0.4 },
+        ];
+        hits.forEach(({ freq, start, dur, vol }) => {
+          const osc = ctx.createOscillator();
+          const over = ctx.createOscillator();
+          const overGain = ctx.createGain();
+          const gain = ctx.createGain();
 
-      this.playSitarNote(NOTE.C5, now, 0.24, 0.16, NOTE.G4, shimmer);
-      this.playSitarNote(NOTE.E5, now + 0.09, 0.24, 0.16, NOTE.C5, shimmer);
-      this.playSitarNote(NOTE.G5, now + 0.18, 0.28, 0.17, NOTE.E5, shimmer);
-      this.playSitarNote(NOTE.C6, now + 0.26, 0.65, 0.18, NOTE.G5, shimmer);
+          osc.type = 'triangle';
+          over.type = 'sine';
+          osc.frequency.setValueAtTime(freq, start);
+          over.frequency.setValueAtTime(freq * 2, start);
 
-      this.playShehnaiNote(NOTE.G4, now + 0.08, 0.22, 0.13, NOTE.E4, shimmer);
-      this.playShehnaiNote(NOTE.C5, now + 0.26, 0.62, 0.15, NOTE.A4, shimmer);
+          overGain.gain.setValueAtTime(0.35, start);
+          overGain.gain.exponentialRampToValueAtTime(0.01, start + Math.min(0.06, dur * 0.5));
 
-      this.playManjira(now + 0.26, 0.095, shimmer);
-      this.playGhungroo(now + 0.26, 0.085, shimmer);
-      this.playFairySparkleNote(NOTE.E6, now + 0.3, 0.5, 0.07, shimmer);
-    } else {
-      // Gentle, respectful descending Indian flute cadence
-      this.playBansuriNote(NOTE.E4, now, 0.2, 0.13, undefined, shimmer);
-      this.playBansuriNote(NOTE.D4, now + 0.13, 0.22, 0.12, NOTE.E4, shimmer);
-      this.playBansuriNote(NOTE.C4, now + 0.26, 0.36, 0.12, NOTE.D4, shimmer);
-      this.playTablaDayan(now, 0.13, true, shimmer);
+          gain.gain.setValueAtTime(0.001, start);
+          gain.gain.linearRampToValueAtTime(vol, start + 0.003);
+          gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+
+          osc.connect(gain);
+          over.connect(overGain);
+          overGain.connect(gain);
+          gain.connect(out);
+
+          osc.start(start);
+          over.start(start);
+          osc.stop(start + dur + 0.015);
+          over.stop(start + dur + 0.015);
+        });
+
+        // Crisp dry attack snap on the first hit
+        this.playTablaDayan(now, 0.24, true, out);
+      } else {
+        // Clean, dry, direct descending double wood-marimba thud ("TOCK-TONK", zero harsh buzz)
+        const drops = [
+          { startFreq: 329.63, endFreq: 296.0, start: now, dur: 0.09, vol: 0.36 },
+          { startFreq: 233.08, endFreq: 196.0, start: now + 0.095, dur: 0.17, vol: 0.42 },
+        ];
+        drops.forEach(({ startFreq, endFreq, start, dur, vol }) => {
+          const body = ctx.createOscillator();
+          const woody = ctx.createOscillator();
+          const woodyGain = ctx.createGain();
+          const gain = ctx.createGain();
+
+          body.type = 'sine';
+          woody.type = 'triangle';
+          body.frequency.setValueAtTime(startFreq, start);
+          body.frequency.exponentialRampToValueAtTime(endFreq, start + dur);
+          woody.frequency.setValueAtTime(startFreq * 1.5, start);
+          woody.frequency.exponentialRampToValueAtTime(endFreq * 1.4, start + Math.min(0.045, dur));
+
+          woodyGain.gain.setValueAtTime(0.28, start);
+          woodyGain.gain.exponentialRampToValueAtTime(0.005, start + 0.038);
+
+          gain.gain.setValueAtTime(0.001, start);
+          gain.gain.linearRampToValueAtTime(vol, start + 0.003);
+          gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+
+          body.connect(gain);
+          woody.connect(woodyGain);
+          woodyGain.connect(gain);
+          gain.connect(out);
+
+          body.start(start);
+          woody.start(start);
+          body.stop(start + dur + 0.015);
+          woody.stop(start + dur + 0.015);
+        });
+
+        // Subtle dry damped percussive knock on the second drop for clear finality
+        this.playTablaDayan(now + 0.095, 0.2, true, out);
+      }
+    } catch {
+      // Ignore transient Web Audio edge cases
     }
   }
 }

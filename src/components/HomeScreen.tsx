@@ -426,13 +426,13 @@ export function HomeScreen({
               step: '03',
               title: 'Lancer la roue des mudras',
               detail:
-                'La roue tire au sort les gestes (sans doublon) qui composent la séquence dans un ordre précis.',
+                'La roue tire au sort les gestes qui composent la séquence dans un ordre précis (si un mudra sort en double, il compte aussi).',
             },
             {
               step: '04',
-              title: '1 minute par niveau',
+              title: '7 niveaux jusqu’aux 11 mudras',
               detail:
-                'Du Niveau 1 (2 mudras) jusqu’à la Finale (7 mudras), vous avez 1 minute par niveau pour mémoriser et reproduire les gestes.',
+                'Du Niveau 1 (2 mudras) jusqu’à la Finale (11 mudras), les enchaînements sont regroupés sur 7 niveaux (2, 4, 6, 8, 9, 10 puis 11 mudras).',
             },
             {
               step: '05',
@@ -444,7 +444,7 @@ export function HomeScreen({
               step: '06',
               title: 'Récompense : la Tortue d’Or',
               detail:
-                'Les 7 mudras réussis dans le temps imparti donnent l’image entière ; sinon, la famille repart avec la moitié de l’image (½).',
+                'Les 11 mudras réussis dans le temps imparti donnent l’image entière ; sinon, la famille repart avec la moitié de l’image (½).',
             },
           ].map((rule) => (
             <li

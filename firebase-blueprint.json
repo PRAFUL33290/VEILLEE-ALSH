@@ -35,11 +35,11 @@
         },
         "familyALevelResults": {
           "type": "array",
-          "description": "Fixed 6-element array of per-level challenge verdicts for Family 1 (pending, passed, failed)."
+          "description": "Fixed 7-element array (6 for legacy duels) of per-level challenge verdicts for Family 1 (pending, passed, failed)."
         },
         "familyAMudrasReached": {
           "type": "integer",
-          "description": "Number of mudras reached by Family 1 (-1 when unset, otherwise 0..7)."
+          "description": "Number of mudras reached by Family 1 (-1 when unset, otherwise 0..11)."
         },
         "familyAElapsedSec": {
           "type": "integer",
@@ -58,11 +58,11 @@
         },
         "familyBLevelResults": {
           "type": "array",
-          "description": "Fixed 6-element array of per-level challenge verdicts for Family 2 (pending, passed, failed)."
+          "description": "Fixed 7-element array (6 for legacy duels) of per-level challenge verdicts for Family 2 (pending, passed, failed)."
         },
         "familyBMudrasReached": {
           "type": "integer",
-          "description": "Number of mudras reached by Family 2 (-1 when unset, otherwise 0..7)."
+          "description": "Number of mudras reached by Family 2 (-1 when unset, otherwise 0..11)."
         },
         "familyBElapsedSec": {
           "type": "integer",

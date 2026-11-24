@@ -16,7 +16,6 @@ import {
   Pause,
   Play,
   Plus,
-  RefreshCw,
   RotateCcw,
   RotateCw,
   Timer,
@@ -28,7 +27,6 @@ import {
 import {
   LEVELS,
   MUDRAS,
-  MudraSector,
   SECTOR_COUNT,
   SequenceEntry,
   getUniformRandomFloat,
@@ -145,11 +143,6 @@ function loadSavedDuels(): SavedDuelRecord[] {
   }
 }
 
-interface DuplicateNotice {
-  mudra: MudraSector;
-  phase: 'countdown' | 'respinning';
-}
-
 function LotusEmblem({ className = 'h-8 w-8' }: { className?: string }) {
   return (
     <svg
@@ -196,14 +189,12 @@ export default function App() {
   const isSpinningRef = useRef(false);
   const entryCounterRef = useRef(0);
   const sequenceRef = useRef<SequenceEntry[]>([]);
-  const autoRespinTimerRef = useRef<number | null>(null);
   const timerDeadlineRef = useRef<number>(0);
   const lastTimerTickSecRef = useRef<number>(0);
 
   const [levelIndex, setLevelIndex] = useState(0);
   const [sequence, setSequence] = useState<SequenceEntry[]>([]);
   const [isSpinning, setIsSpinning] = useState(false);
-  const [duplicateNotice, setDuplicateNotice] = useState<DuplicateNotice | null>(null);
   const [isSequenceHidden, setIsSequenceHidden] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -214,6 +205,7 @@ export default function App() {
   const [isFinaleValidated, setIsFinaleValidated] = useState(false);
   const [mudraSprites, setMudraSprites] = useState<Record<number, MudraSpriteAsset>>({});
   const [zoomedMudraIndex, setZoomedMudraIndex] = useState<number | null>(null);
+  const [isSequenceFullscreenOpen, setIsSequenceFullscreenOpen] = useState(false);
   const [activeScreen, setActiveScreen] = useState<'home' | 'game'>('home');
   const [isGameStagePrewarmed, setIsGameStagePrewarmed] = useState(false);
 
@@ -328,9 +320,6 @@ export default function App() {
 
   useEffect(() => {
     return () => {
-      if (autoRespinTimerRef.current !== null) {
-        window.clearTimeout(autoRespinTimerRef.current);
-      }
       if (saveFeedbackTimerRef.current !== null) {
         window.clearTimeout(saveFeedbackTimerRef.current);
       }
@@ -340,7 +329,11 @@ export default function App() {
 
   const currentLevel = LEVELS[levelIndex];
   const targetCount = currentLevel.targetCount;
-  const maxFinaleCount = LEVELS[LEVELS.length - 1].targetCount; // 7
+  const maxFinaleCount = LEVELS[LEVELS.length - 1].targetCount; // 11
+  const nextLevelDelta =
+    !currentLevel.isFinale && LEVELS[levelIndex + 1]
+      ? Math.max(1, LEVELS[levelIndex + 1].targetCount - currentLevel.targetCount)
+      : 1;
   const hasReachedLevelTarget = sequence.length >= targetCount;
   const hasDrawnFinaleMudras = currentLevel.isFinale && sequence.length >= maxFinaleCount;
   const isFinaleCompleted = hasDrawnFinaleMudras && isFinaleValidated;
@@ -352,8 +345,7 @@ export default function App() {
     isAllLevelsEvaluated ||
     duelElapsedSec >= DUEL_LIMIT_SECONDS ||
     sessionTimerStatus === 'expired';
-  const isAutoRespinPending = duplicateNotice !== null;
-  const isWheelBusy = isSpinning || isAutoRespinPending;
+  const isWheelBusy = isSpinning;
   const canAdvanceLevel = hasReachedLevelTarget && !currentLevel.isFinale && !isWheelBusy;
   const canValidateFinale = hasDrawnFinaleMudras && !isFinaleValidated && !isWheelBusy;
   const canSpin = !isWheelBusy && !hasReachedLevelTarget;
@@ -362,30 +354,37 @@ export default function App() {
 
   const levelProgressPercent = Math.min(100, Math.round((sequence.length / targetCount) * 100));
 
-  // Keep fullscreen Mudra viewer in sync if sequence shrinks or gets hidden
+  // Keep fullscreen Mudra & sequence viewers in sync if sequence shrinks or gets hidden
   useEffect(() => {
+    if (sequence.length === 0 && isSequenceFullscreenOpen) {
+      setIsSequenceFullscreenOpen(false);
+    }
     if (zoomedMudraIndex === null) return;
     if (isSequenceHidden || zoomedMudraIndex >= sequence.length) {
       setZoomedMudraIndex(null);
     }
-  }, [isSequenceHidden, sequence.length, zoomedMudraIndex]);
+  }, [isSequenceHidden, sequence.length, zoomedMudraIndex, isSequenceFullscreenOpen]);
 
-  // Keyboard navigation & scroll lock for fullscreen Mudra viewer
+  // Keyboard navigation & scroll lock for fullscreen Mudra / sequence viewers
   useEffect(() => {
-    if (zoomedMudraIndex === null) return;
+    if (zoomedMudraIndex === null && !isSequenceFullscreenOpen) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        setZoomedMudraIndex(null);
-      } else if (event.key === 'ArrowLeft' && sequence.length > 1) {
+        if (zoomedMudraIndex !== null) {
+          setZoomedMudraIndex(null);
+        } else {
+          setIsSequenceFullscreenOpen(false);
+        }
+      } else if (zoomedMudraIndex !== null && event.key === 'ArrowLeft' && sequence.length > 1) {
         event.preventDefault();
         setZoomedMudraIndex((prev) =>
           prev === null ? null : (prev - 1 + sequence.length) % sequence.length,
         );
-      } else if (event.key === 'ArrowRight' && sequence.length > 1) {
+      } else if (zoomedMudraIndex !== null && event.key === 'ArrowRight' && sequence.length > 1) {
         event.preventDefault();
         setZoomedMudraIndex((prev) =>
           prev === null ? null : (prev + 1) % sequence.length,
@@ -398,7 +397,7 @@ export default function App() {
       document.body.style.overflow = prevOverflow;
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [zoomedMudraIndex, sequence.length]);
+  }, [zoomedMudraIndex, isSequenceFullscreenOpen, sequence.length]);
 
   // Track total duel elapsed seconds smoothly once the duel starts
   useEffect(() => {
@@ -509,6 +508,9 @@ export default function App() {
     setIsMuted((prev) => {
       const next = !prev;
       mudraAudio.setMuted(next);
+      if (!next) {
+        mudraAudio.playUnmuteChime();
+      }
       return next;
     });
   }, []);
@@ -644,10 +646,10 @@ export default function App() {
 
   const handleSpin = useCallback(() => {
     mudraAudio.unlock();
-    if (isSpinningRef.current || hasReachedLevelTarget || duplicateNotice !== null) return;
+    if (isSpinningRef.current || hasReachedLevelTarget) return;
     ensureDuelClockStarted();
     launchWheelSpin();
-  }, [hasReachedLevelTarget, duplicateNotice, ensureDuelClockStarted, launchWheelSpin]);
+  }, [hasReachedLevelTarget, ensureDuelClockStarted, launchWheelSpin]);
 
   const handleManualSpinStart = useCallback(() => {
     isSpinningRef.current = true;
@@ -657,13 +659,8 @@ export default function App() {
 
   const handleSpinInterrupt = useCallback(() => {
     mudraAudio.stopSpinFairy();
-    if (autoRespinTimerRef.current !== null) {
-      window.clearTimeout(autoRespinTimerRef.current);
-      autoRespinTimerRef.current = null;
-    }
     isSpinningRef.current = false;
     setIsSpinning(false);
-    setDuplicateNotice(null);
   }, []);
 
   const handleSpinComplete = useCallback(
@@ -672,26 +669,8 @@ export default function App() {
       isSpinningRef.current = false;
       setIsSpinning(false);
 
+      // Every landed mudra counts immediately (including duplicates — never auto-respin)
       const currentSeq = sequenceRef.current;
-      const previousEntry = currentSeq.length > 0 ? currentSeq[currentSeq.length - 1] : null;
-
-      // If the exact same Mudra lands twice in a row, display a message and auto-respin
-      if (previousEntry && previousEntry.mudra.id === drawnMudra.id) {
-        mudraAudio.playDuplicateRespin();
-        setDuplicateNotice({ mudra: drawnMudra, phase: 'countdown' });
-
-        if (autoRespinTimerRef.current !== null) {
-          window.clearTimeout(autoRespinTimerRef.current);
-        }
-        autoRespinTimerRef.current = window.setTimeout(() => {
-          autoRespinTimerRef.current = null;
-          setDuplicateNotice({ mudra: drawnMudra, phase: 'respinning' });
-          launchWheelSpin();
-        }, 1800);
-        return;
-      }
-
-      setDuplicateNotice(null);
       entryCounterRef.current += 1;
       const newEntry: SequenceEntry = {
         uid: `mudra-${entryCounterRef.current}-${drawnMudra.id}`,
@@ -705,7 +684,7 @@ export default function App() {
       // Always wait for the host to explicitly validate the Finale before launching the victory celebration
       mudraAudio.playMudraLand();
     },
-    [launchWheelSpin],
+    [],
   );
 
   const handleValidateFinale = useCallback(() => {
@@ -733,7 +712,6 @@ export default function App() {
     (nextIdx: number) => {
       if (
         isSpinningRef.current ||
-        duplicateNotice !== null ||
         nextIdx < 0 ||
         nextIdx >= LEVELS.length ||
         nextIdx === levelIndex
@@ -748,18 +726,18 @@ export default function App() {
       setRemainingMs(levelTimerSecRef.current * 1000);
       mudraAudio.playLevelAdvance();
     },
-    [duplicateNotice, levelIndex],
+    [levelIndex],
   );
 
   const handleUndoLast = useCallback(() => {
-    if (isSpinningRef.current || duplicateNotice !== null || sequenceRef.current.length === 0) return;
+    if (isSpinningRef.current || sequenceRef.current.length === 0) return;
     const next = sequenceRef.current.slice(0, -1);
     sequenceRef.current = next;
     setSequence(next);
     if (next.length < maxFinaleCount) {
       setIsFinaleValidated(false);
     }
-  }, [duplicateNotice, maxFinaleCount]);
+  }, [maxFinaleCount]);
 
   const showSaveToast = useCallback((message: string) => {
     setSaveFeedback(message);
@@ -875,13 +853,8 @@ export default function App() {
   }, []);
 
   const resetWheelForNextRun = useCallback(() => {
-    if (autoRespinTimerRef.current !== null) {
-      window.clearTimeout(autoRespinTimerRef.current);
-      autoRespinTimerRef.current = null;
-    }
     sequenceRef.current = [];
     setSequence([]);
-    setDuplicateNotice(null);
     setLevelIndex(0);
     lastTimerTickSecRef.current = 0;
     setTimerStatus('idle');
@@ -894,6 +867,7 @@ export default function App() {
     setSessionRemainingMs(SESSION_TOTAL_SECONDS * 1000);
     setIsSequenceHidden(false);
     setZoomedMudraIndex(null);
+    setIsSequenceFullscreenOpen(false);
     setShowFinaleBanner(true);
     setIsFinaleValidated(false);
   }, []);
@@ -1119,12 +1093,13 @@ export default function App() {
   }, [resetWheelForNextRun, clearFamilyNamesOnReset]);
 
   const handleReturnToHome = useCallback(() => {
-    if (isSpinningRef.current || duplicateNotice !== null) return;
+    if (isSpinningRef.current) return;
     mudraAudio.stopSpinFairy();
     setZoomedMudraIndex(null);
+    setIsSequenceFullscreenOpen(false);
     setActiveScreen('home');
     window.scrollTo(0, 0);
-  }, [duplicateNotice]);
+  }, []);
 
   const handleEnterGame = useCallback(() => {
     mudraAudio.unlock();
@@ -1348,27 +1323,6 @@ export default function App() {
             />
           </div>
 
-          {/* Consecutive Duplicate Mudra Alert Banner */}
-          {duplicateNotice && (
-            <div
-              role="status"
-              aria-live="assertive"
-              className="animate-lotus-reveal mt-3 flex w-full max-w-[620px] items-center justify-center gap-3 rounded-2xl border-2 border-[#FCD34D] bg-[#2D0408]/95 px-5 py-3.5 text-center shadow-lg shadow-black/40"
-            >
-              <RefreshCw className="h-5 w-5 shrink-0 animate-spin text-[#FCD34D]" aria-hidden="true" />
-              <div className="text-left sm:text-center">
-                <p className="text-sm sm:text-base font-extrabold text-[#FDE68A]">
-                  Même mudra deux fois de suite : {duplicateNotice.mudra.name.toUpperCase()} !
-                </p>
-                <p className="text-xs sm:text-sm font-semibold text-[#FFF8EA]/90">
-                  {duplicateNotice.phase === 'countdown'
-                    ? 'La roue se relance toute seule dans un instant…'
-                    : 'Relance automatique en cours…'}
-                </p>
-              </div>
-            </div>
-          )}
-
           {/* Primary Red Action CTA & Level Advance CTA directly beneath the wheel */}
           <div className="mt-3 flex w-full max-w-[620px] flex-col items-center gap-2.5">
             <button
@@ -1381,12 +1335,7 @@ export default function App() {
                   : 'border border-[#F5B324]/25 bg-[#4A090F]/70 text-[#F3D9A4]/50 cursor-not-allowed shadow-none'
               }`}
             >
-              {duplicateNotice ? (
-                <>
-                  <RefreshCw className="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
-                  <span>RELANCE AUTOMATIQUE…</span>
-                </>
-              ) : isSpinning ? (
+              {isSpinning ? (
                 <>
                   <Disc3 className="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
                   <span>LA ROUE TOURNE…</span>
@@ -1394,12 +1343,12 @@ export default function App() {
               ) : isFinaleCompleted ? (
                 <>
                   <Trophy className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                  <span>FINALE VALIDÉE (7 MUDRAS)</span>
+                  <span>FINALE VALIDÉE ({maxFinaleCount} MUDRAS)</span>
                 </>
               ) : hasDrawnFinaleMudras ? (
                 <>
                   <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                  <span>FINALE PRÊTE (7 MUDRAS)</span>
+                  <span>FINALE PRÊTE ({maxFinaleCount} MUDRAS)</span>
                 </>
               ) : hasReachedLevelTarget ? (
                 <>
@@ -1422,7 +1371,10 @@ export default function App() {
                 onClick={handleAdvanceLevel}
                 className="animate-lotus-reveal inline-flex w-full min-h-[58px] items-center justify-center gap-2.5 rounded-2xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-6 py-3.5 text-base sm:text-lg font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/35 transition-all duration-150 hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/55"
               >
-                <span>NIVEAU RÉUSSI : AJOUTER UN MUDRA</span>
+                <span>
+                  NIVEAU RÉUSSI : AJOUTER {nextLevelDelta}{' '}
+                  {nextLevelDelta > 1 ? 'MUDRAS' : 'MUDRA'}
+                </span>
                 <ArrowRight className="h-5 w-5 shrink-0" aria-hidden="true" />
               </button>
             )}
@@ -1472,7 +1424,7 @@ export default function App() {
                 <LotusEmblem className="h-7 w-7 shrink-0" />
               </div>
               <p className="mt-1.5 text-sm sm:text-base text-[#FFF8EA]/85">
-                Vous avez réussi les 6 étapes et réuni les 7 mudras de la Finale.
+                Vous avez réussi les {LEVELS.length} niveaux et réuni les {maxFinaleCount} mudras de la Finale.
                 Cachez la séquence pour faire la démonstration finale de mémoire !
               </p>
               <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
@@ -1551,7 +1503,7 @@ export default function App() {
               />
             </div>
 
-            {/* 6-step selectable level selector */}
+            {/* 7-step selectable level selector */}
             <div className="mt-3.5">
               <div className="mb-1.5 flex items-center justify-between gap-2">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-[#F3D9A4]/75">
@@ -1562,7 +1514,7 @@ export default function App() {
                 </span>
               </div>
               <div
-                className="grid grid-cols-6 gap-1.5 text-center"
+                className="grid grid-cols-7 gap-1 text-center"
                 role="group"
                 aria-label="Sélectionner le niveau"
               >
@@ -1670,13 +1622,11 @@ export default function App() {
                 Enchaînements
               </h2>
               <span className="text-xs font-semibold text-[#F3D9A4]/80 tabular-nums">
-                {duplicateNotice
-                  ? `Doublon : ${duplicateNotice.mudra.name.toUpperCase()}`
-                  : isSpinning
-                    ? 'Tirage en cours…'
-                    : sequence.length === 0
-                      ? 'Aucun mudra tiré'
-                      : `${sequence.length} ${sequence.length > 1 ? 'étapes' : 'étape'}`}
+                {isSpinning
+                  ? 'Tirage en cours…'
+                  : sequence.length === 0
+                    ? 'Aucun mudra tiré'
+                    : `${sequence.length} ${sequence.length > 1 ? 'étapes' : 'étape'}`}
               </span>
             </div>
 
@@ -1768,8 +1718,19 @@ export default function App() {
               </ol>
             )}
 
-            {/* Memorization & Undo Controls */}
-            <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            {/* Fullscreen Sequence Showcase Trigger + Memorization & Undo Controls */}
+            <div className="mt-4 flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsSequenceFullscreenOpen(true)}
+                disabled={sequence.length === 0}
+                className="inline-flex min-h-[50px] w-full items-center justify-center gap-2 rounded-xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] px-4 py-2.5 text-sm sm:text-base font-extrabold uppercase tracking-wide text-[#2B0508] shadow-md shadow-black/25 transition-colors hover:from-[#FCD34D] hover:to-[#EAB308] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+              >
+                <Maximize2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Afficher l’enchaînement en plein écran</span>
+              </button>
+
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <button
                 type="button"
                 onClick={() => setIsSequenceHidden((prev) => !prev)}
@@ -1801,6 +1762,7 @@ export default function App() {
                 <Undo2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
                 <span>Annuler le dernier</span>
               </button>
+              </div>
             </div>
           </div>
         </section>
@@ -1908,13 +1870,201 @@ export default function App() {
         onClearAllDuels={handleClearAllSavedDuels}
       />
 
+      {/* Fullscreen Complete Enchaînements Popup (all drawn mudras at once for audience visibility) */}
+      {isSequenceFullscreenOpen && sequence.length > 0 && (() => {
+        const isCompactGrid = sequence.length >= 9;
+        const cardWidthClass =
+          sequence.length <= 2
+            ? 'w-[calc(50%-0.5rem)] sm:w-[min(42vw,340px)]'
+            : sequence.length === 3
+              ? 'w-[calc(50%-0.5rem)] sm:w-[calc(33.333%-0.9rem)] max-w-[330px]'
+              : sequence.length === 5 || sequence.length === 6
+                ? 'w-[calc(50%-0.5rem)] sm:w-[calc(33.333%-1rem)] max-w-[310px]'
+                : sequence.length <= 8
+                  ? 'w-[calc(50%-0.5rem)] md:w-[calc(25%-1rem)] max-w-[290px]'
+                  : 'w-[calc(50%-0.5rem)] sm:w-[calc(25%-0.9rem)] lg:w-[calc(20%-0.9rem)] xl:w-[calc(16.666%-0.95rem)] max-w-[225px]';
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex flex-col justify-between overflow-y-auto bg-[#2B0408]/98 px-4 py-4 sm:px-8 sm:py-6 backdrop-blur-md"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="fullscreen-sequence-title"
+          >
+            {/* Top Bar: Prominent Retour + Level/Matchup Title + Cacher/Afficher */}
+            <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setIsSequenceFullscreenOpen(false)}
+                className="inline-flex min-h-[50px] items-center justify-center gap-2.5 rounded-xl border-2 border-[#FCD34D] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-base font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/40 transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+              >
+                <ArrowLeft className="h-5 w-5 shrink-0" aria-hidden="true" />
+                <span>Retour</span>
+              </button>
+
+              <div className="text-center">
+                <h2
+                  id="fullscreen-sequence-title"
+                  className="text-xl sm:text-3xl font-extrabold uppercase tracking-wider text-[#FFF8EA]"
+                >
+                  Enchaînement · {currentLevel.label}
+                </h2>
+                <p className="mt-0.5 text-xs sm:text-sm font-bold text-[#FDE68A]/90 tabular-nums">
+                  {sequence.length} {sequence.length > 1 ? 'mudras sortis' : 'mudra sorti'} sur {targetCount}
+                  {' · '}
+                  {familyADisplayName} CONTRE {familyBDisplayName}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsSequenceHidden((prev) => !prev)}
+                className={`inline-flex min-h-[50px] items-center justify-center gap-2 rounded-xl border-2 px-5 py-2.5 text-sm sm:text-base font-extrabold uppercase tracking-wide transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap ${
+                  isSequenceHidden
+                    ? 'border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] text-[#2B0508] hover:from-[#FCD34D] hover:to-[#EAB308]'
+                    : 'border-[#F5B324]/60 bg-[#5E0A12] text-[#FFF8EA] hover:bg-[#7A1019] hover:border-[#FCD34D]'
+                }`}
+              >
+                {isSequenceHidden ? (
+                  <>
+                    <Eye className="h-5 w-5 shrink-0" aria-hidden="true" />
+                    <span>Afficher</span>
+                  </>
+                ) : (
+                  <>
+                    <EyeOff className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                    <span>Cacher</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Center Stage: All Currently Drawn Mudras Displayed Huge in Exact Order */}
+            <div className="mx-auto my-5 flex w-full max-w-7xl flex-1 items-center justify-center">
+              <ol className="flex w-full flex-wrap items-stretch justify-center gap-3.5 sm:gap-5">
+                {sequence.map((entry, idx) => {
+                  const sprite = mudraSprites[entry.mudra.id];
+                  if (isSequenceHidden) {
+                    return (
+                      <li
+                        key={entry.uid}
+                        className={`animate-lotus-reveal flex ${cardWidthClass} flex-col items-center rounded-2xl border-2 border-[#F5B324]/45 bg-[#3B050A]/90 p-4 text-center shadow-xl shadow-black/40`}
+                      >
+                        <div className="mb-3 flex w-full items-center justify-between">
+                          <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#FCD34D]/70 bg-[#991B1B] text-lg font-extrabold text-[#FFF8EA] tabular-nums">
+                            {idx + 1}
+                          </span>
+                          <span className="text-xs font-bold uppercase tracking-wider text-[#F3D9A4]/70">
+                            Étape {idx + 1}
+                          </span>
+                        </div>
+                        <div className="flex aspect-square w-full items-center justify-center rounded-2xl border-2 border-dashed border-[#F5B324]/40 bg-[#240306]/80">
+                          <span className="text-6xl sm:text-7xl font-extrabold text-[#FCD34D]/55">
+                            ?
+                          </span>
+                        </div>
+                        <p className="mt-3 text-base sm:text-lg font-extrabold uppercase tracking-widest text-[#FCD34D]/65">
+                          Caché
+                        </p>
+                      </li>
+                    );
+                  }
+
+                  return (
+                    <li
+                      key={entry.uid}
+                      className={`animate-lotus-reveal flex ${cardWidthClass}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setZoomedMudraIndex(idx)}
+                        aria-label={`Agrandir le mudra ${entry.mudra.name.toUpperCase()} en plein écran`}
+                        className={`group flex w-full flex-col items-center rounded-2xl border-2 border-[#F5B324]/70 bg-[#3B050A]/92 ${
+                          isCompactGrid ? 'p-2.5 sm:p-3' : 'p-3.5 sm:p-4'
+                        } text-center shadow-xl shadow-black/40 transition-all duration-150 hover:-translate-y-0.5 hover:border-[#FDE68A] hover:bg-[#52080F] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]`}
+                      >
+                        <div className="mb-2 flex w-full items-center justify-between gap-2">
+                          <span
+                            className={`flex shrink-0 items-center justify-center rounded-xl border border-[#FCD34D]/75 bg-[#991B1B] font-extrabold text-[#FFF8EA] tabular-nums ${
+                              isCompactGrid ? 'h-8 w-8 text-sm' : 'h-10 w-10 text-lg'
+                            }`}
+                          >
+                            {idx + 1}
+                          </span>
+                          <Maximize2
+                            className="h-4 w-4 shrink-0 text-[#FCD34D]/70 transition-colors group-hover:text-[#FCD34D]"
+                            aria-hidden="true"
+                          />
+                        </div>
+
+                        <div
+                          className={`flex aspect-square w-full items-center justify-center rounded-2xl border-2 border-[#F5B324] bg-[#FFF8EA] shadow-inner transition-transform duration-150 group-hover:scale-[1.02] ${
+                            isCompactGrid ? 'p-2 sm:p-2.5' : 'p-3 sm:p-4'
+                          }`}
+                        >
+                          {sprite ? (
+                            <img
+                              src={sprite.dataUrl}
+                              alt={`Geste ${entry.mudra.name.toUpperCase()}`}
+                              className="h-full w-full object-contain"
+                            />
+                          ) : (
+                            <Hand className="h-16 w-16 text-[#991B1B]" aria-hidden="true" />
+                          )}
+                        </div>
+
+                        <span
+                          className={`w-full truncate font-extrabold uppercase tracking-wide text-[#FFF8EA] ${
+                            isCompactGrid
+                              ? 'mt-2 text-sm sm:text-base'
+                              : 'mt-3 text-lg sm:text-xl lg:text-2xl'
+                          }`}
+                        >
+                          {entry.mudra.name.toUpperCase()}
+                        </span>
+
+                        <span
+                          className={`mt-0.5 w-full truncate font-bold text-[#FDE68A] ${
+                            isCompactGrid ? 'text-xs sm:text-sm' : 'text-sm sm:text-base'
+                          }`}
+                        >
+                          {entry.mudra.meaningFr}
+                        </span>
+
+                        <span
+                          className="mt-2.5 h-1.5 w-14 rounded-full"
+                          style={{ backgroundColor: entry.mudra.colorHex }}
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+
+            {/* Bottom Action Bar */}
+            <div className="mx-auto flex w-full max-w-3xl items-center justify-center">
+              <button
+                type="button"
+                onClick={() => setIsSequenceFullscreenOpen(false)}
+                className="inline-flex min-h-[50px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-7 py-2.5 text-sm sm:text-base font-extrabold uppercase tracking-wide text-white shadow-md transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+              >
+                <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Retour à la roue</span>
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Fullscreen Mudra Lightbox ("Enchaînements" click-to-zoom) */}
       {zoomedMudraIndex !== null && !isSequenceHidden && sequence[zoomedMudraIndex] && (() => {
         const zoomedEntry = sequence[zoomedMudraIndex];
         const zoomedSprite = mudraSprites[zoomedEntry.mudra.id];
         return (
           <div
-            className="fixed inset-0 z-50 flex flex-col justify-between bg-[#2B0408]/98 px-4 py-4 sm:px-8 sm:py-6 backdrop-blur-md"
+            className="fixed inset-0 z-[60] flex flex-col justify-between bg-[#2B0408]/98 px-4 py-4 sm:px-8 sm:py-6 backdrop-blur-md"
             role="dialog"
             aria-modal="true"
             aria-labelledby="zoomed-mudra-title"

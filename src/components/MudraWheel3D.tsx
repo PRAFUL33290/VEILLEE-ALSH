@@ -778,6 +778,9 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         const drag = dragStateRef.current;
         if (!drag.active || e.pointerId !== drag.pointerId) return;
 
+        // Re-unlock on pointerup/touchend as well (iPadOS Safari strongly trusts touchend gestures)
+        mudraAudio.unlock();
+
         const caughtMidSpin = drag.wasCaughtMidSpin;
         drag.active = false;
         drag.wasCaughtMidSpin = false;
