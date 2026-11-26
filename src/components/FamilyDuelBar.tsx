@@ -261,8 +261,8 @@ export function FamilyDuelBar({
               {/* Finger-Friendly Per-Level Validation (Full-Width Large Réussi/Raté + 7-Level Strip) */}
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-extrabold uppercase tracking-wider text-[#FCD34D]">
-                    {currentLevelLabel}
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-[#FCD34D] tabular-nums">
+                    {currentLevelLabel} - {LEVELS[currentLevelIndex]?.targetCount ?? 0} Mudras
                   </span>
                   <span className="text-[11px] font-bold text-[#F3D9A4]/75">
                     {currentLvlStatus === 'passed'
@@ -286,13 +286,16 @@ export function FamilyDuelBar({
                     aria-pressed={currentLvlStatus === 'passed'}
                     className={`inline-flex min-h-[60px] items-center justify-center gap-2 rounded-xl border-2 px-4 py-3 text-base sm:text-lg font-extrabold uppercase tracking-wide transition-all active:scale-[0.97] cursor-pointer whitespace-nowrap touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
                       currentLvlStatus === 'passed'
-                        ? 'border-[#6EE7B7] bg-[#065F46] text-[#ECFDF5] shadow-md shadow-emerald-950/50'
+                        ? 'animate-ok-pop border-[#6EE7B7] bg-[#065F46] text-[#ECFDF5] shadow-md shadow-emerald-950/50'
                         : 'border-[#6EE7B7]/45 bg-[#3B050A] text-[#FFF8EA] hover:bg-[#4E0910] hover:border-[#6EE7B7]'
                     }`}
                   >
                     <Check
+                      key={currentLvlStatus === 'passed' ? `ok-${team.id}-${currentLevelIndex}` : 'idle'}
                       className={`h-5 w-5 sm:h-6 sm:w-6 shrink-0 stroke-[2.75] ${
-                        currentLvlStatus === 'passed' ? 'text-[#6EE7B7]' : 'text-[#6EE7B7]/85'
+                        currentLvlStatus === 'passed'
+                          ? 'animate-ok-pop text-[#6EE7B7]'
+                          : 'text-[#6EE7B7]/85'
                       }`}
                       aria-hidden="true"
                     />

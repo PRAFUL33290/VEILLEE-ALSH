@@ -59,21 +59,21 @@ export function CountdownBanner({
   const progressPercent = progressRatio * 100;
 
   const isExpired = status === 'expired';
-  const isCritical = !isExpired && status === 'running' && remainingMs <= 10000;
-  const isWarning = !isExpired && !isCritical && status === 'running' && progressRatio <= 0.3;
+  const isCritical = !isExpired && status === 'running' && remainingMs <= 5000;
+  const isWarning = !isExpired && !isCritical && status === 'running' && remainingMs <= 10000;
   const isDuelOverTime = duelElapsedSec >= duelLimitSec;
 
   const statusText = isExpired
-    ? 'Minute écoulée'
+    ? 'Entraînement terminé'
     : isCritical
       ? 'Dernières secondes'
       : isWarning
-        ? 'Accélérez le rythme'
+        ? 'Fin de l’entraînement bientôt'
         : status === 'running'
-          ? 'Chrono niveau en cours'
+          ? 'Entraînement des 2 familles'
           : status === 'paused'
-            ? 'En pause'
-            : `${formatDurationBadge(levelSeconds)} pour ce niveau`;
+            ? 'Entraînement en pause'
+            : `Entraînement · ${formatDurationBadge(levelSeconds)}`;
 
   const barGradient =
     isExpired || isCritical
@@ -85,7 +85,7 @@ export function CountdownBanner({
   return (
     <div
       role="region"
-      aria-label={`Chrono ${levelLabel} — 1 minute par niveau`}
+      aria-label={`Chrono d’entraînement ${levelLabel} — ${formatDurationBadge(levelSeconds)} pour les deux familles`}
       aria-live={isExpired ? 'assertive' : 'off'}
       className={`animate-lotus-reveal mb-2 w-full max-w-[660px] rounded-2xl border-2 px-4 py-2.5 shadow-lg shadow-black/35 backdrop-blur-xs transition-colors ${
         isExpired
@@ -195,8 +195,8 @@ export function CountdownBanner({
           <button
             type="button"
             onClick={onReset}
-            aria-label="Réinitialiser le chrono du niveau"
-            title="Réinitialiser le chrono du niveau"
+            aria-label="Réinitialiser le chrono d’entraînement"
+            title="Réinitialiser le chrono d’entraînement"
             className="inline-flex min-h-[42px] min-w-[42px] items-center justify-center rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-2.5 text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
           >
             <RotateCcw className="h-4 w-4 text-[#FCD34D]" aria-hidden="true" />
@@ -211,7 +211,7 @@ export function CountdownBanner({
         aria-valuenow={Math.ceil(remainingMs / 1000)}
         aria-valuemin={0}
         aria-valuemax={levelSeconds}
-        aria-label={`Temps restant pour ${levelLabel} : ${formatCountdown(remainingMs)}`}
+        aria-label={`Temps d’entraînement restant pour ${levelLabel} : ${formatCountdown(remainingMs)}`}
       >
         <div
           className="h-full rounded-full"

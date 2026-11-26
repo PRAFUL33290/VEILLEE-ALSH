@@ -36,6 +36,10 @@ import { MudraSpriteAsset, loadMudraSprites } from './game/mudraSprites';
 import { mudraAudio } from './game/audio';
 import { MudraWheel3D, MudraWheelHandle } from './components/MudraWheel3D';
 import { CelebrationOverlay } from './components/CelebrationOverlay';
+import {
+  LevelSuccessAnnouncement,
+  LevelSuccessToast,
+} from './components/LevelSuccessToast';
 import { CountdownBanner, TimerStatus } from './components/CountdownBanner';
 import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import {
@@ -70,7 +74,7 @@ import {
 } from './game/duelStore';
 
 const SAVED_DUELS_STORAGE_KEY = 'mudra-saved-duels-v1';
-const DEFAULT_LEVEL_TIMER_SECONDS = 60; // 1 minute per level
+const DEFAULT_LEVEL_TIMER_SECONDS = 30; // 30 secondes d'entraînement pour les deux familles
 const DUEL_LIMIT_SECONDS = 8 * 60; // 8 minutes total per duel
 
 function createDefaultDuelFamilies(): [DuelFamilySlot, DuelFamilySlot] {
@@ -197,7 +201,9 @@ export default function App() {
   const [isSpinning, setIsSpinning] = useState(false);
   const [isSequenceHidden, setIsSequenceHidden] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [isResetKeepFamiliesModalOpen, setIsResetKeepFamiliesModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [sfxVolume, setSfxVolume] = useState(1);
   const [isMusicPlaying, setIsMusicPlaying] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpandedView, setIsExpandedView] = useState(false);
@@ -250,7 +256,11 @@ export default function App() {
   levelTimerSecRef.current = levelTimerSec;
   const duelElapsedSecRef = useRef(duelElapsedSec);
   duelElapsedSecRef.current = duelElapsedSec;
+  const [levelSuccessAnnouncement, setLevelSuccessAnnouncement] =
+    useState<LevelSuccessAnnouncement | null>(null);
   const saveFeedbackTimerRef = useRef<number | null>(null);
+  const levelSuccessTimerRef = useRef<number | null>(null);
+  const levelSuccessIdRef = useRef(0);
 
   useEffect(() => {
     try {
@@ -323,6 +333,9 @@ export default function App() {
       if (saveFeedbackTimerRef.current !== null) {
         window.clearTimeout(saveFeedbackTimerRef.current);
       }
+      if (levelSuccessTimerRef.current !== null) {
+        window.clearTimeout(levelSuccessTimerRef.current);
+      }
       mudraAudio.setMusicPlaying(false);
     };
   }, []);
@@ -349,6 +362,13 @@ export default function App() {
   const canAdvanceLevel = hasReachedLevelTarget && !currentLevel.isFinale && !isWheelBusy;
   const canValidateFinale = hasDrawnFinaleMudras && !isFinaleValidated && !isWheelBusy;
   const canSpin = !isWheelBusy && !hasReachedLevelTarget;
+  const canResetCurrentRun =
+    sequence.length > 0 ||
+    levelIndex > 0 ||
+    countEvaluatedLevels(families[0].levelResults) > 0 ||
+    countEvaluatedLevels(families[1].levelResults) > 0 ||
+    families[0].outcome !== 'pending' ||
+    families[1].outcome !== 'pending';
   const familyADisplayName = getDisplayFamilyName(families[0].name, 0);
   const familyBDisplayName = getDisplayFamilyName(families[1].name, 1);
 
@@ -410,7 +430,7 @@ export default function App() {
     return () => window.clearInterval(intervalId);
   }, [duelStartedAtMs]);
 
-  // Drift-free 60fps countdown loop for the 1-minute per-level timer
+  // Drift-free 60fps countdown loop for the 30-second family practice timer
   useEffect(() => {
     if (!isLevelTimerEnabled || timerStatus !== 'running') return;
 
@@ -419,7 +439,7 @@ export default function App() {
       const nextMs = Math.max(0, timerDeadlineRef.current - performance.now());
       setRemainingMs(nextMs);
 
-      if (nextMs > 0 && nextMs <= 10000) {
+      if (nextMs > 0 && nextMs <= 5000) {
         const secCeil = Math.ceil(nextMs / 1000);
         if (secCeil !== lastTimerTickSecRef.current) {
           lastTimerTickSecRef.current = secCeil;
@@ -509,10 +529,25 @@ export default function App() {
       const next = !prev;
       mudraAudio.setMuted(next);
       if (!next) {
+        setSfxVolume(mudraAudio.getSfxVolume());
         mudraAudio.playUnmuteChime();
       }
       return next;
     });
+  }, []);
+
+  const handleChangeSfxVolume = useCallback((nextPercent: number) => {
+    mudraAudio.unlock();
+    const normalized = Math.min(1, Math.max(0, nextPercent / 100));
+    setSfxVolume(normalized);
+    setIsMuted(normalized <= 0.001);
+    mudraAudio.setSfxVolume(normalized);
+  }, []);
+
+  const handlePreviewSfxVolume = useCallback(() => {
+    if (!mudraAudio.isMuted() && mudraAudio.getSfxVolume() > 0.001) {
+      mudraAudio.playTick(0.65);
+    }
   }, []);
 
   const handleSetFallbackSynth = useCallback((playing: boolean) => {
@@ -699,13 +734,32 @@ export default function App() {
   const handleAdvanceLevel = useCallback(() => {
     mudraAudio.unlock();
     if (!canAdvanceLevel) return;
+    const completedLevel = LEVELS[levelIndex];
     const nextIdx = Math.min(LEVELS.length - 1, levelIndex + 1);
+    const nextLevel = LEVELS[nextIdx];
+    const addedMudras = Math.max(1, nextLevel.targetCount - completedLevel.targetCount);
+
     setLevelIndex(nextIdx);
-    // Reset the 1-minute level countdown cleanly for the new level
+    // Reset the 30-second training countdown cleanly for the new level
     lastTimerTickSecRef.current = 0;
     setTimerStatus('idle');
     setRemainingMs(levelTimerSecRef.current * 1000);
     mudraAudio.playLevelAdvance();
+
+    if (levelSuccessTimerRef.current !== null) {
+      window.clearTimeout(levelSuccessTimerRef.current);
+    }
+    levelSuccessIdRef.current += 1;
+    setLevelSuccessAnnouncement({
+      id: levelSuccessIdRef.current,
+      completedLabel: completedLevel.label,
+      nextLabel: nextLevel.label,
+      addedMudras,
+    });
+    levelSuccessTimerRef.current = window.setTimeout(() => {
+      setLevelSuccessAnnouncement(null);
+      levelSuccessTimerRef.current = null;
+    }, 2150);
   }, [canAdvanceLevel, levelIndex]);
 
   const handleSelectLevel = useCallback(
@@ -870,6 +924,11 @@ export default function App() {
     setIsSequenceFullscreenOpen(false);
     setShowFinaleBanner(true);
     setIsFinaleValidated(false);
+    if (levelSuccessTimerRef.current !== null) {
+      window.clearTimeout(levelSuccessTimerRef.current);
+      levelSuccessTimerRef.current = null;
+    }
+    setLevelSuccessAnnouncement(null);
   }, []);
 
   const handleSignInServer = useCallback(async () => {
@@ -1092,6 +1151,33 @@ export default function App() {
     setIsResetModalOpen(false);
   }, [resetWheelForNextRun, clearFamilyNamesOnReset]);
 
+  const handleConfirmResetKeepFamilies = useCallback(() => {
+    if (isSpinningRef.current) return;
+    resetWheelForNextRun();
+    setRewardPreview(null);
+    setFamilies((prev) => [
+      {
+        id: 0,
+        name: prev[0].name,
+        outcome: 'pending',
+        levelResults: createEmptyLevelResults(),
+        mudrasReached: null,
+        elapsedSec: null,
+      },
+      {
+        id: 1,
+        name: prev[1].name,
+        outcome: 'pending',
+        levelResults: createEmptyLevelResults(),
+        mudrasReached: null,
+        elapsedSec: null,
+      },
+    ]);
+    setHasUnsavedDuelChanges(false);
+    setIsResetKeepFamiliesModalOpen(false);
+    showSaveToast('Jeu réinitialisé · noms des familles conservés');
+  }, [resetWheelForNextRun, showSaveToast]);
+
   const handleReturnToHome = useCallback(() => {
     if (isSpinningRef.current) return;
     mudraAudio.stopSpinFairy();
@@ -1134,6 +1220,11 @@ export default function App() {
     >
       {/* Celebratory red & gold lotus petals animation for Finale victory */}
       <CelebrationOverlay active={activeScreen === 'game' && isFinaleCompleted && showFinaleBanner} />
+
+      {/* Brief celebratory "Niveau réussi !" confirmation stamp */}
+      <LevelSuccessToast
+        announcement={activeScreen === 'game' ? levelSuccessAnnouncement : null}
+      />
 
       {/* Top Bar */}
       <header className="w-full border-b border-[#F5B324]/35 bg-[#3B050A]/90 backdrop-blur-xs">
@@ -1195,16 +1286,16 @@ export default function App() {
               onSetFallbackSynth={handleSetFallbackSynth}
             />
 
-            {/* Wheel Sound Effects Toggle */}
+            {/* Wheel Sound Effects Toggle (compact 44x44 button so header never wraps on iPad) */}
             <button
               type="button"
               onClick={handleToggleMute}
               aria-pressed={!isMuted}
-              aria-label={isMuted ? 'Activer les effets sonores' : 'Couper les effets sonores'}
-              title={isMuted ? 'Activer les effets sonores' : 'Couper les effets sonores'}
-              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3 text-sm font-semibold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              aria-label={isMuted ? 'Activer le son de la roue' : 'Couper le son de la roue'}
+              title={isMuted ? 'Activer le son de la roue' : 'Couper le son de la roue'}
+              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-3 text-sm font-semibold text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
             >
-              {isMuted ? (
+              {isMuted || sfxVolume <= 0.001 ? (
                 <VolumeX className="h-5 w-5 text-[#F3D9A4]/60" aria-hidden="true" />
               ) : (
                 <Volume2 className="h-5 w-5 text-[#FCD34D]" aria-hidden="true" />
@@ -1371,6 +1462,7 @@ export default function App() {
                 onClick={handleAdvanceLevel}
                 className="animate-lotus-reveal inline-flex w-full min-h-[58px] items-center justify-center gap-2.5 rounded-2xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-6 py-3.5 text-base sm:text-lg font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/35 transition-all duration-150 hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/55"
               >
+                <Check className="h-5 w-5 shrink-0 text-[#6EE7B7] stroke-[2.75]" aria-hidden="true" />
                 <span>
                   NIVEAU RÉUSSI : AJOUTER {nextLevelDelta}{' '}
                   {nextLevelDelta > 1 ? 'MUDRAS' : 'MUDRA'}
@@ -1390,10 +1482,53 @@ export default function App() {
               </button>
             )}
 
-            <p className="mt-0.5 inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#F3D9A4]/80">
-              <Hand className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-              <span>Tournez, lancez ou arrêtez la roue directement au doigt</span>
-            </p>
+            <div className="mt-0.5 flex w-full flex-wrap items-center justify-between gap-2 px-1">
+              <p className="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#F3D9A4]/80">
+                <Hand className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                <span>Tournez, lancez ou arrêtez la roue directement au doigt</span>
+              </p>
+
+              {/* Slim Wheel & SFX Volume Slider directly beneath the wheel */}
+              <div
+                role="group"
+                aria-label="Volume sonore de la roue"
+                className="inline-flex items-center gap-2 rounded-xl border border-[#F5B324]/35 bg-[#3B050A]/80 px-2.5 py-1.5"
+              >
+                <button
+                  type="button"
+                  onClick={handleToggleMute}
+                  aria-pressed={!isMuted}
+                  aria-label={isMuted ? 'Activer le son de la roue' : 'Couper le son de la roue'}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#FCD34D] transition-colors hover:bg-[#5E0A12] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                >
+                  {isMuted || sfxVolume <= 0.001 ? (
+                    <VolumeX className="h-4 w-4 text-[#F3D9A4]/60" aria-hidden="true" />
+                  ) : (
+                    <Volume2 className="h-4 w-4 text-[#FCD34D]" aria-hidden="true" />
+                  )}
+                </button>
+                <span className="text-[11px] font-bold text-[#F3D9A4]">Son roue</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={isMuted ? 0 : Math.round(sfxVolume * 100)}
+                  onChange={(e) => handleChangeSfxVolume(Number(e.target.value))}
+                  onPointerUp={handlePreviewSfxVolume}
+                  onTouchEnd={handlePreviewSfxVolume}
+                  onKeyUp={handlePreviewSfxVolume}
+                  aria-label="Volume de la roue et des effets sonores"
+                  className="h-2 w-24 sm:w-28 cursor-pointer accent-[#F5B324] touch-manipulation"
+                />
+                <span
+                  aria-hidden="true"
+                  className="w-8 text-right text-[11px] font-extrabold text-[#FDE68A] tabular-nums"
+                >
+                  {isMuted ? 0 : Math.round(sfxVolume * 100)}%
+                </span>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -1514,7 +1649,7 @@ export default function App() {
                 </span>
               </div>
               <div
-                className="grid grid-cols-7 gap-1 text-center"
+                className="grid grid-cols-2 gap-2 text-center"
                 role="group"
                 aria-label="Sélectionner le niveau"
               >
@@ -1533,33 +1668,35 @@ export default function App() {
                       aria-pressed={isCurrent}
                       aria-label={`Sélectionner ${lvl.label} (${lvl.targetCount} mudras)`}
                       title={`${lvl.label} · ${lvl.targetCount} mudras`}
-                      className={`min-h-[50px] rounded-lg border px-1 py-1.5 transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                      className={`inline-flex min-h-[46px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs sm:text-sm font-extrabold tabular-nums transition-all cursor-pointer touch-manipulation disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                        lvl.isFinale ? 'col-span-2' : ''
+                      } ${
                         isCurrent
                           ? 'border-[#FCD34D] bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-[#FFF8EA] shadow-sm shadow-black/30 ring-1 ring-[#FCD34D]/50'
                           : isDone
                             ? 'border-[#F5B324]/55 bg-[#F5B324]/18 text-[#FCD34D] hover:border-[#FCD34D] hover:bg-[#7F1119]/80 hover:text-[#FFF8EA]'
-                            : 'border-[#F5B324]/25 bg-[#260306]/80 text-[#F3D9A4]/80 hover:border-[#FCD34D]/75 hover:bg-[#5E0A12] hover:text-[#FFF8EA]'
+                            : 'border-[#F5B324]/25 bg-[#260306]/80 text-[#F3D9A4]/85 hover:border-[#FCD34D]/75 hover:bg-[#5E0A12] hover:text-[#FFF8EA]'
                       }`}
                     >
-                      <div className="text-[11px] font-bold leading-tight truncate">
-                        {lvl.shortLabel}
-                      </div>
-                      <div className="mt-0.5 text-xs font-extrabold tabular-nums">
-                        {lvl.targetCount}
-                      </div>
+                      {lvl.isFinale && (
+                        <Trophy className="h-3.5 w-3.5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                      )}
+                      <span className="truncate">
+                        {lvl.shortLabel} - {lvl.targetCount} Mudras
+                      </span>
                     </button>
                   );
                 })}
               </div>
             </div>
 
-            {/* 1-Minute Per-Level Chrono Toggle & Duration Adjuster */}
+            {/* 30-Second Family Practice Chrono Toggle & Duration Adjuster */}
             <div className="mt-4 border-t border-[#F5B324]/20 pt-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2.5">
                 <div className="flex items-center gap-2 min-w-0">
                   <Timer className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
                   <span className="text-sm font-bold text-[#FFF8EA] truncate">
-                    Chrono par niveau (1 min)
+                    Chrono entraînement (30 s)
                   </span>
                 </div>
 
@@ -1645,19 +1782,34 @@ export default function App() {
                     return (
                       <li
                         key={entry.uid}
-                        className="animate-lotus-reveal flex items-center justify-between gap-3 rounded-xl border border-[#F5B324]/25 bg-[#240306]/75 px-3.5 py-2.5"
+                        className={`animate-lotus-reveal flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 ${
+                          isNewest
+                            ? 'border-[#FCD34D]/80 bg-[#5E0A12]/90'
+                            : 'border-[#F5B324]/25 bg-[#240306]/75'
+                        }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#FCD34D]/55 bg-[#991B1B] text-sm font-extrabold text-[#FFF8EA] tabular-nums">
                             {idx + 1}
                           </span>
-                          <span className="truncate text-base sm:text-lg font-extrabold uppercase tracking-widest text-[#FCD34D]/60">
+                          <div
+                            aria-label="Image du geste masquée"
+                            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-dashed border-[#F5B324]/55 bg-[#1E0205]/90 text-lg font-extrabold text-[#FCD34D]/75"
+                          >
                             ?
-                          </span>
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="truncate text-base sm:text-lg font-extrabold uppercase leading-tight tracking-wide text-[#FFF8EA]">
+                              {entry.mudra.name.toUpperCase()}
+                            </span>
+                            <span className="truncate text-xs sm:text-sm font-semibold text-[#FDE68A]/90">
+                              {entry.mudra.meaningFr}
+                            </span>
+                          </div>
                         </div>
                         <span
                           className="h-3.5 w-3.5 shrink-0 rounded-full border border-[#FDE68A]/50"
-                          style={{ backgroundColor: 'rgba(245, 179, 36, 0.22)' }}
+                          style={{ backgroundColor: entry.mudra.colorHex }}
                           aria-hidden="true"
                         />
                       </li>
@@ -1743,12 +1895,12 @@ export default function App() {
                 {isSequenceHidden ? (
                   <>
                     <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
-                    <span>Afficher</span>
+                    <span>Afficher les images</span>
                   </>
                 ) : (
                   <>
                     <EyeOff className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                    <span>Cacher</span>
+                    <span>Cacher les images</span>
                   </>
                 )}
               </button>
@@ -1763,6 +1915,16 @@ export default function App() {
                 <span>Annuler le dernier</span>
               </button>
               </div>
+
+              <button
+                type="button"
+                onClick={() => setIsResetKeepFamiliesModalOpen(true)}
+                disabled={!canResetCurrentRun || isWheelBusy}
+                className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border border-[#FCA5A5]/45 bg-[#4A070D] px-4 py-2.5 text-sm font-extrabold text-[#FEE2E2] transition-colors hover:bg-[#6E0D15] hover:border-[#FCA5A5] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              >
+                <RotateCcw className="h-4 w-4 shrink-0 text-[#FCA5A5]" aria-hidden="true" />
+                <span>Reset du jeu (garder les familles)</span>
+              </button>
             </div>
           </div>
         </section>
@@ -1850,6 +2012,58 @@ export default function App() {
         </div>
       )}
 
+      {/* Quick Reset Game Confirmation Modal (always keeps both family names) */}
+      {isResetKeepFamiliesModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1A0204]/75 p-4 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reset-keep-families-title"
+          onClick={() => setIsResetKeepFamiliesModalOpen(false)}
+        >
+          <div
+            className="animate-lotus-reveal w-full max-w-md rounded-2xl border-2 border-[#F5B324]/60 bg-[#3B050A] p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <LotusEmblem className="h-8 w-8 shrink-0" />
+              <h2
+                id="reset-keep-families-title"
+                className="text-xl font-extrabold text-[#FFF8EA]"
+              >
+                Réinitialiser le jeu ?
+              </h2>
+            </div>
+
+            <p className="mt-3 text-sm sm:text-base leading-relaxed text-[#F3D9A4]/88">
+              Tous les mudras tirés et la progression des niveaux seront effacés (retour
+              au Niveau 1). Les noms des deux familles (
+              <strong className="text-[#FFF8EA]">{familyADisplayName}</strong> et{' '}
+              <strong className="text-[#FFF8EA]">{familyBDisplayName}</strong>) seront
+              conservés.
+            </p>
+
+            <div className="mt-6 flex flex-col-reverse gap-2.5 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setIsResetKeepFamiliesModalOpen(false)}
+                className="min-h-[48px] rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-5 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmResetKeepFamilies}
+                className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              >
+                <RotateCcw className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>OUI, RESET LE JEU</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Persistent Matchup History Modal ("Carnet des duels · Qui contre Qui") */}
       <DuelHistoryModal
         open={isHistoryOpen}
@@ -1928,12 +2142,12 @@ export default function App() {
                 {isSequenceHidden ? (
                   <>
                     <Eye className="h-5 w-5 shrink-0" aria-hidden="true" />
-                    <span>Afficher</span>
+                    <span>Afficher les images</span>
                   </>
                 ) : (
                   <>
                     <EyeOff className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                    <span>Cacher</span>
+                    <span>Cacher les images</span>
                   </>
                 )}
               </button>
@@ -1948,24 +2162,60 @@ export default function App() {
                     return (
                       <li
                         key={entry.uid}
-                        className={`animate-lotus-reveal flex ${cardWidthClass} flex-col items-center rounded-2xl border-2 border-[#F5B324]/45 bg-[#3B050A]/90 p-4 text-center shadow-xl shadow-black/40`}
+                        className={`animate-lotus-reveal flex ${cardWidthClass} flex-col items-center rounded-2xl border-2 border-[#F5B324]/55 bg-[#3B050A]/92 ${
+                          isCompactGrid ? 'p-2.5 sm:p-3' : 'p-3.5 sm:p-4'
+                        } text-center shadow-xl shadow-black/40`}
                       >
-                        <div className="mb-3 flex w-full items-center justify-between">
-                          <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#FCD34D]/70 bg-[#991B1B] text-lg font-extrabold text-[#FFF8EA] tabular-nums">
+                        <div className="mb-2 flex w-full items-center justify-between gap-2">
+                          <span
+                            className={`flex shrink-0 items-center justify-center rounded-xl border border-[#FCD34D]/75 bg-[#991B1B] font-extrabold text-[#FFF8EA] tabular-nums ${
+                              isCompactGrid ? 'h-8 w-8 text-sm' : 'h-10 w-10 text-lg'
+                            }`}
+                          >
                             {idx + 1}
                           </span>
-                          <span className="text-xs font-bold uppercase tracking-wider text-[#F3D9A4]/70">
-                            Étape {idx + 1}
-                          </span>
+                          <EyeOff
+                            className="h-4 w-4 shrink-0 text-[#FCD34D]/55"
+                            aria-hidden="true"
+                          />
                         </div>
-                        <div className="flex aspect-square w-full items-center justify-center rounded-2xl border-2 border-dashed border-[#F5B324]/40 bg-[#240306]/80">
-                          <span className="text-6xl sm:text-7xl font-extrabold text-[#FCD34D]/55">
+
+                        <div
+                          aria-label="Image du geste masquée"
+                          className="flex aspect-square w-full items-center justify-center rounded-2xl border-2 border-dashed border-[#F5B324]/45 bg-[#240306]/85"
+                        >
+                          <span
+                            className={`font-extrabold text-[#FCD34D]/60 ${
+                              isCompactGrid ? 'text-5xl sm:text-6xl' : 'text-6xl sm:text-7xl'
+                            }`}
+                          >
                             ?
                           </span>
                         </div>
-                        <p className="mt-3 text-base sm:text-lg font-extrabold uppercase tracking-widest text-[#FCD34D]/65">
-                          Caché
-                        </p>
+
+                        <span
+                          className={`w-full truncate font-extrabold uppercase tracking-wide text-[#FFF8EA] ${
+                            isCompactGrid
+                              ? 'mt-2 text-sm sm:text-base'
+                              : 'mt-3 text-lg sm:text-xl lg:text-2xl'
+                          }`}
+                        >
+                          {entry.mudra.name.toUpperCase()}
+                        </span>
+
+                        <span
+                          className={`mt-0.5 w-full truncate font-bold text-[#FDE68A] ${
+                            isCompactGrid ? 'text-xs sm:text-sm' : 'text-sm sm:text-base'
+                          }`}
+                        >
+                          {entry.mudra.meaningFr}
+                        </span>
+
+                        <span
+                          className="mt-2.5 h-1.5 w-14 rounded-full"
+                          style={{ backgroundColor: entry.mudra.colorHex }}
+                          aria-hidden="true"
+                        />
                       </li>
                     );
                   }

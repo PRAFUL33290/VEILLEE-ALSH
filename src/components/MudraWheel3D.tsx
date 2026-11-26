@@ -931,39 +931,28 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       const container = mountRef.current;
       if (!container) return;
 
-      // Probe WebGL2 + software renderer without relying on user agent
-      let isSoftwareGl = false;
-      let hasWebGL = false;
-      try {
-        const probeCanvas = document.createElement('canvas');
-        const gl = probeCanvas.getContext('webgl2') || probeCanvas.getContext('webgl');
-        if (gl) {
-          hasWebGL = true;
-          const ext = gl.getExtension('WEBGL_debug_renderer_info');
-          const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-          const gpu = String(gl.getParameter(param));
-          gl.getExtension('WEBGL_lose_context')?.loseContext();
-          isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-        }
-      } catch {
-        hasWebGL = false;
-      }
-
-      if (!hasWebGL) {
-        setUseFallback(true);
-        return;
-      }
-
       let renderer: THREE.WebGLRenderer;
       try {
         renderer = new THREE.WebGLRenderer({
-          antialias: !isSoftwareGl,
+          antialias: true,
           alpha: true,
           powerPreference: 'high-performance',
         });
       } catch {
         setUseFallback(true);
         return;
+      }
+
+      // Inspect GPU renderer directly on the live WebGL context (avoids burning an extra iPadOS WebGL slot)
+      let isSoftwareGl = false;
+      try {
+        const gl = renderer.getContext();
+        const ext = gl.getExtension('WEBGL_debug_renderer_info');
+        const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
+        const gpu = String(gl.getParameter(param));
+        isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+      } catch {
+        isSoftwareGl = false;
       }
 
       renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -1546,9 +1535,17 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
 
       const onContextLost = (e: Event) => {
         e.preventDefault();
-        setUseFallback(true);
+      };
+      const onContextRestored = () => {
+        if (disposed) return;
+        if (faceCanvasRef.current && faceTextureRef.current) {
+          paintWheelFaceCanvas(faceCanvasRef.current, mudraSpritesRef.current);
+          faceTextureRef.current.needsUpdate = true;
+        }
+        handleResize();
       };
       canvasEl.addEventListener('webglcontextlost', onContextLost);
+      canvasEl.addEventListener('webglcontextrestored', onContextRestored);
 
       const resizeObserver = new ResizeObserver(handleResize);
       resizeObserver.observe(container);
@@ -1565,6 +1562,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         window.clearTimeout(frameId);
         resizeObserver.disconnect();
         canvasEl.removeEventListener('webglcontextlost', onContextLost);
+        canvasEl.removeEventListener('webglcontextrestored', onContextRestored);
         envRT.dispose();
         geometries.forEach((g) => g.dispose());
         materials.forEach((m) => m.dispose());

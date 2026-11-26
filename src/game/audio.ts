@@ -139,6 +139,7 @@ class MudraAudioEngine {
   private musicWetGain: GainNode | null = null;
 
   private muted = false;
+  private sfxVolume = 1;
   private musicPlaying = false;
   private lastTickMs = 0;
   private fairyStepIndex = 0;
@@ -190,19 +191,41 @@ class MudraAudioEngine {
     return this.muted;
   }
 
+  public getSfxVolume(): number {
+    return this.sfxVolume;
+  }
+
   public isMusicPlaying(): boolean {
     return this.musicPlaying;
+  }
+
+  public setSfxVolume(volume: number): void {
+    const clamped = Math.min(1, Math.max(0, Number.isFinite(volume) ? volume : 1));
+    this.sfxVolume = clamped;
+    if (clamped <= 0.001) {
+      this.muted = true;
+      this.stopSpinFairy();
+    } else {
+      this.muted = false;
+    }
+    if (this.ctx && this.sfxGain) {
+      const now = this.ctx.currentTime;
+      this.sfxGain.gain.cancelScheduledValues(now);
+      this.sfxGain.gain.setTargetAtTime(this.muted ? 0 : clamped * 1.45, now, 0.015);
+    }
   }
 
   public setMuted(muted: boolean): void {
     this.muted = muted;
     if (muted) {
       this.stopSpinFairy();
+    } else if (this.sfxVolume <= 0.001) {
+      this.sfxVolume = 0.85;
     }
     if (this.ctx && this.sfxGain) {
       const now = this.ctx.currentTime;
       this.sfxGain.gain.cancelScheduledValues(now);
-      this.sfxGain.gain.setTargetAtTime(muted ? 0 : 1.35, now, 0.02);
+      this.sfxGain.gain.setTargetAtTime(muted ? 0 : this.sfxVolume * 1.45, now, 0.02);
     }
   }
 
@@ -272,7 +295,7 @@ class MudraAudioEngine {
 
       // Dedicated SFX bus
       this.sfxGain = this.ctx.createGain();
-      this.sfxGain.gain.value = this.muted ? 0 : 1.35;
+      this.sfxGain.gain.value = this.muted ? 0 : this.sfxVolume * 1.45;
       this.sfxGain.connect(sfxCompressor);
 
       // Enchanted palace shimmer bus for fairy chimes & Indian victory instruments
@@ -339,7 +362,7 @@ class MudraAudioEngine {
   }
 
   private getSfxContext(): { ctx: AudioContext; out: AudioNode; shimmer: AudioNode } | null {
-    if (this.muted) return null;
+    if (this.muted || this.sfxVolume <= 0.001) return null;
     const ctx = this.ensureContext();
     if (!ctx || !this.sfxGain || !this.sfxShimmerBus) return null;
     return { ctx, out: this.sfxGain, shimmer: this.sfxShimmerBus };
