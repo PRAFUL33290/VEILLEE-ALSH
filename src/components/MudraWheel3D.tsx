@@ -1620,7 +1620,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         }}
         className={`relative flex aspect-square items-center justify-center mx-auto rounded-full touch-none select-none outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/60 ${
           fullscreen
-            ? 'h-[min(78vh,92vw)] w-[min(78vh,92vw)] max-h-[1180px] max-w-[1180px]'
+            ? 'h-[min(72vh,92vw)] w-[min(72vh,92vw)] max-h-[1120px] max-w-[1120px]'
             : 'w-full max-w-[760px]'
         } ${
           isDragging ? 'cursor-grabbing' : 'cursor-grab'

@@ -70,7 +70,7 @@ export function CountdownBanner({
       : isWarning
         ? 'Fin de l’entraînement bientôt'
         : status === 'running'
-          ? 'Entraînement des 2 familles'
+          ? 'Entraînement · Team 1 & Team 2'
           : status === 'paused'
             ? 'Entraînement en pause'
             : `Entraînement · ${formatDurationBadge(levelSeconds)}`;
@@ -85,7 +85,7 @@ export function CountdownBanner({
   return (
     <div
       role="region"
-      aria-label={`Chrono d’entraînement ${levelLabel} — ${formatDurationBadge(levelSeconds)} pour les deux familles`}
+      aria-label={`Chrono d’entraînement ${levelLabel} — ${formatDurationBadge(levelSeconds)} pour les deux équipes`}
       aria-live={isExpired ? 'assertive' : 'off'}
       className={`animate-lotus-reveal mb-2 w-full max-w-[660px] rounded-2xl border-2 px-4 py-2.5 shadow-lg shadow-black/35 backdrop-blur-xs transition-colors ${
         isExpired

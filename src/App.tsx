@@ -42,21 +42,17 @@ import {
   LevelSuccessToast,
 } from './components/LevelSuccessToast';
 import { CountdownBanner, TimerStatus } from './components/CountdownBanner';
-import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import {
   DuelFamilySlot,
-  DuelFinishFooter,
   FamilyDuelBar,
-  FamilyOutcome,
   LevelAttemptStatus,
-  SavedDuelRecord,
+  TortueRewardModal,
   TortueRewardPreview,
   countEvaluatedLevels,
   createEmptyLevelResults,
+  deriveTeamOutcomeFromLevels,
   getDisplayFamilyName,
-  sanitizeLevelResults,
 } from './components/FamilyDuelBar';
-import { DuelHistoryModal } from './components/DuelHistoryModal';
 import { HomeScreen } from './components/HomeScreen';
 import {
   SESSION_PLAY_SECONDS,
@@ -65,24 +61,15 @@ import {
   SessionTimerStatus,
 } from './components/SessionTimerHeader';
 import { InlineMusicPlayer } from './components/YouTubeMusicDock';
-import { auth, googleProvider } from './firebase';
-import {
-  deleteDuelOnServer,
-  saveDuelToServer,
-  subscribeUserDuels,
-  updateDuelLevelResultsOnServer,
-  updateDuelOutcomeOnServer,
-} from './game/duelStore';
 
-const SAVED_DUELS_STORAGE_KEY = 'mudra-saved-duels-v1';
-const DEFAULT_LEVEL_TIMER_SECONDS = 30; // 30 secondes d'entraînement pour les deux familles
+const DEFAULT_LEVEL_TIMER_SECONDS = 30; // 30 secondes d'entraînement pour les deux équipes
 const DUEL_LIMIT_SECONDS = 8 * 60; // 8 minutes total per duel
 
 function createDefaultDuelFamilies(): [DuelFamilySlot, DuelFamilySlot] {
   return [
     {
       id: 0,
-      name: '',
+      name: 'TEAM 1',
       outcome: 'pending',
       levelResults: createEmptyLevelResults(),
       mudrasReached: null,
@@ -90,62 +77,13 @@ function createDefaultDuelFamilies(): [DuelFamilySlot, DuelFamilySlot] {
     },
     {
       id: 1,
-      name: '',
+      name: 'TEAM 2',
       outcome: 'pending',
       levelResults: createEmptyLevelResults(),
       mudrasReached: null,
       elapsedSec: null,
     },
   ];
-}
-
-function sanitizeOutcome(value: unknown): FamilyOutcome {
-  if (value === 'complete' || value === 'partial' || value === 'pending') return value;
-  return 'pending';
-}
-
-function loadSavedDuels(): SavedDuelRecord[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = window.localStorage.getItem(SAVED_DUELS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is SavedDuelRecord => Boolean(item && typeof item === 'object'))
-      .map((item, idx) => ({
-        id: typeof item.id === 'string' ? item.id : `duel-${idx}`,
-        duelNumber: typeof item.duelNumber === 'number' ? item.duelNumber : idx + 1,
-        recordedAtIso:
-          typeof item.recordedAtIso === 'string'
-            ? item.recordedAtIso
-            : new Date().toISOString(),
-        familyA: {
-          name: typeof item.familyA?.name === 'string' ? item.familyA.name : 'FAMILLE 1',
-          outcome: sanitizeOutcome(item.familyA?.outcome),
-          levelResults: sanitizeLevelResults(item.familyA?.levelResults),
-          mudrasReached:
-            typeof item.familyA?.mudrasReached === 'number'
-              ? item.familyA.mudrasReached
-              : null,
-          elapsedSec:
-            typeof item.familyA?.elapsedSec === 'number' ? item.familyA.elapsedSec : null,
-        },
-        familyB: {
-          name: typeof item.familyB?.name === 'string' ? item.familyB.name : 'FAMILLE 2',
-          outcome: sanitizeOutcome(item.familyB?.outcome),
-          levelResults: sanitizeLevelResults(item.familyB?.levelResults),
-          mudrasReached:
-            typeof item.familyB?.mudrasReached === 'number'
-              ? item.familyB.mudrasReached
-              : null,
-          elapsedSec:
-            typeof item.familyB?.elapsedSec === 'number' ? item.familyB.elapsedSec : null,
-        },
-      }));
-  } catch {
-    return [];
-  }
 }
 
 function LotusEmblem({ className = 'h-8 w-8' }: { className?: string }) {
@@ -202,7 +140,6 @@ export default function App() {
   const [isSpinning, setIsSpinning] = useState(false);
   const [isSequenceHidden, setIsSequenceHidden] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
-  const [isResetKeepFamiliesModalOpen, setIsResetKeepFamiliesModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [sfxVolume, setSfxVolume] = useState(1);
   const [isMusicPlaying, setIsMusicPlaying] = useState(false);
@@ -234,26 +171,13 @@ export default function App() {
     SESSION_TOTAL_SECONDS * 1000,
   );
 
-  // 2-Family Simultaneous Duel & Persistent Matchup History ("Carnet des duels") state
+  // Team 1 vs Team 2 duel state
   const [families, setFamilies] =
     useState<[DuelFamilySlot, DuelFamilySlot]>(createDefaultDuelFamilies);
-  const [savedDuels, setSavedDuels] = useState<SavedDuelRecord[]>(loadSavedDuels);
   const [rewardPreview, setRewardPreview] = useState<TortueRewardPreview | null>(null);
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
-  const [hasUnsavedDuelChanges, setHasUnsavedDuelChanges] = useState(false);
-  const [clearFamilyNamesOnReset, setClearFamilyNamesOnReset] = useState(false);
-
-  // Firebase Server Auth & Sync state
-  const [serverUser, setServerUser] = useState<User | null>(null);
-  const [isAuthBusy, setIsAuthBusy] = useState(false);
 
   const familiesRef = useRef(families);
   familiesRef.current = families;
-  const savedDuelsRef = useRef(savedDuels);
-  savedDuelsRef.current = savedDuels;
-  const serverUserRef = useRef(serverUser);
-  serverUserRef.current = serverUser;
   const levelTimerSecRef = useRef(levelTimerSec);
   levelTimerSecRef.current = levelTimerSec;
   const duelElapsedSecRef = useRef(duelElapsedSec);
@@ -266,7 +190,6 @@ export default function App() {
     mudra: MudraSector;
     isLeaving: boolean;
   } | null>(null);
-  const saveFeedbackTimerRef = useRef<number | null>(null);
   const levelSuccessTimerRef = useRef<number | null>(null);
   const levelSuccessIdRef = useRef(0);
   const isWheelFullscreenRef = useRef(isWheelFullscreen);
@@ -274,52 +197,6 @@ export default function App() {
   const fullscreenRevealLeaveTimerRef = useRef<number | null>(null);
   const fullscreenRevealHideTimerRef = useRef<number | null>(null);
   const fullscreenRevealIdRef = useRef(0);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(SAVED_DUELS_STORAGE_KEY, JSON.stringify(savedDuels));
-    } catch {
-      // Ignore storage quota / private mode errors
-    }
-  }, [savedDuels]);
-
-  // Listen to Firebase Auth & subscribe to server duels when signed in
-  useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      setServerUser(user);
-    });
-    return () => unsubscribeAuth();
-  }, []);
-
-  useEffect(() => {
-    if (!serverUser) return;
-    let migrated = false;
-
-    const unsubscribeDuels = subscribeUserDuels(
-      serverUser.uid,
-      (remoteDuels) => {
-        // One-time sync of any local session duels not yet stored on the server
-        if (!migrated) {
-          migrated = true;
-          const remoteIds = new Set(remoteDuels.map((d) => d.id));
-          const localOnly = savedDuelsRef.current.filter((d) => !remoteIds.has(d.id));
-          if (localOnly.length > 0) {
-            localOnly.forEach((localDuel) => {
-              void saveDuelToServer(serverUser.uid, localDuel).catch((err) => {
-                console.error('Migration locale vers serveur impossible:', err);
-              });
-            });
-          }
-        }
-        setSavedDuels(remoteDuels);
-      },
-      (err) => {
-        console.error('Erreur de lecture Firestore:', err);
-      },
-    );
-
-    return () => unsubscribeDuels();
-  }, [serverUser]);
 
   useEffect(() => {
     let active = true;
@@ -343,9 +220,6 @@ export default function App() {
 
   useEffect(() => {
     return () => {
-      if (saveFeedbackTimerRef.current !== null) {
-        window.clearTimeout(saveFeedbackTimerRef.current);
-      }
       if (levelSuccessTimerRef.current !== null) {
         window.clearTimeout(levelSuccessTimerRef.current);
       }
@@ -369,14 +243,6 @@ export default function App() {
   const hasReachedLevelTarget = sequence.length >= targetCount;
   const hasDrawnFinaleMudras = currentLevel.isFinale && sequence.length >= maxFinaleCount;
   const isFinaleCompleted = hasDrawnFinaleMudras && isFinaleValidated;
-  const isAllLevelsEvaluated =
-    countEvaluatedLevels(families[0].levelResults) === LEVELS.length &&
-    countEvaluatedLevels(families[1].levelResults) === LEVELS.length;
-  const isGameFinished =
-    isFinaleCompleted ||
-    isAllLevelsEvaluated ||
-    duelElapsedSec >= DUEL_LIMIT_SECONDS ||
-    sessionTimerStatus === 'expired';
   const isWheelBusy = isSpinning;
   const canAdvanceLevel = hasReachedLevelTarget && !currentLevel.isFinale && !isWheelBusy;
   const canValidateFinale = hasDrawnFinaleMudras && !isFinaleValidated && !isWheelBusy;
@@ -904,106 +770,51 @@ export default function App() {
     }
   }, [maxFinaleCount]);
 
-  const showSaveToast = useCallback((message: string) => {
-    setSaveFeedback(message);
-    if (saveFeedbackTimerRef.current !== null) {
-      window.clearTimeout(saveFeedbackTimerRef.current);
-    }
-    saveFeedbackTimerRef.current = window.setTimeout(() => {
-      setSaveFeedback(null);
-      saveFeedbackTimerRef.current = null;
-    }, 3400);
-  }, []);
-
-  const handleRenameFamily = useCallback((id: 0 | 1, name: string) => {
-    setFamilies((prev) => {
-      const next: [DuelFamilySlot, DuelFamilySlot] = [prev[0], prev[1]];
-      next[id] = { ...next[id], name };
-      return next;
-    });
-    setHasUnsavedDuelChanges(true);
-  }, []);
-
-  const handleClearFamily = useCallback((id: 0 | 1) => {
-    setFamilies((prev) => {
-      const next: [DuelFamilySlot, DuelFamilySlot] = [prev[0], prev[1]];
-      next[id] = {
-        id,
-        name: '',
-        outcome: 'pending',
-        levelResults: createEmptyLevelResults(),
-        mudrasReached: null,
-        elapsedSec: null,
-      };
-      return next;
-    });
-  }, []);
-
   const handleSetFamilyLevelResult = useCallback(
     (id: 0 | 1, targetLevelIdx: number, status: LevelAttemptStatus) => {
       mudraAudio.unlock();
       ensureDuelClockStarted();
 
+      const prevTeam = familiesRef.current[id];
+      const prevOutcome = prevTeam.outcome;
+      const updatedResults = [...prevTeam.levelResults];
+      if (targetLevelIdx >= 0 && targetLevelIdx < updatedResults.length) {
+        updatedResults[targetLevelIdx] = status;
+      }
+      const nextOutcome = deriveTeamOutcomeFromLevels(updatedResults);
+      const nextMudrasReached =
+        nextOutcome === 'pending'
+          ? null
+          : nextOutcome === 'complete'
+            ? maxFinaleCount
+            : Math.max(LEVELS[3].targetCount, sequenceRef.current.length);
+      const nextElapsedSec =
+        nextOutcome === 'pending'
+          ? null
+          : prevTeam.elapsedSec ?? (duelElapsedSecRef.current > 0 ? duelElapsedSecRef.current : null);
+
       setFamilies((prev) => {
         const next: [DuelFamilySlot, DuelFamilySlot] = [prev[0], prev[1]];
-        const updatedResults = [...next[id].levelResults];
-        if (targetLevelIdx >= 0 && targetLevelIdx < updatedResults.length) {
-          updatedResults[targetLevelIdx] = status;
-        }
         next[id] = {
           ...next[id],
           levelResults: updatedResults,
+          outcome: nextOutcome,
+          mudrasReached: nextMudrasReached,
+          elapsedSec: nextElapsedSec,
         };
         return next;
       });
-      setHasUnsavedDuelChanges(true);
 
-      if (status !== 'pending') {
+      const unlockedFull = status === 'passed' && nextOutcome === 'complete' && prevOutcome !== 'complete';
+      const unlockedHalf = status === 'passed' && nextOutcome === 'partial' && prevOutcome === 'pending';
+
+      if (unlockedFull || unlockedHalf) {
+        mudraAudio.playTortueReward(unlockedFull);
+      } else if (status !== 'pending') {
         mudraAudio.playTeamLevelVerdict(status === 'passed');
       }
     },
-    [ensureDuelClockStarted],
-  );
-
-  const handleSetFamilyOutcome = useCallback(
-    (id: 0 | 1, outcome: FamilyOutcome) => {
-      mudraAudio.unlock();
-      const target = familiesRef.current[id];
-      const mudrasReached =
-        outcome === 'pending'
-          ? null
-          : outcome === 'complete'
-            ? maxFinaleCount
-            : target.mudrasReached ?? sequenceRef.current.length;
-
-      const elapsedSec =
-        outcome === 'pending'
-          ? null
-          : target.elapsedSec ?? (duelElapsedSecRef.current > 0 ? duelElapsedSecRef.current : null);
-
-      setFamilies((prev) => {
-        const next: [DuelFamilySlot, DuelFamilySlot] = [prev[0], prev[1]];
-        next[id] = {
-          ...next[id],
-          outcome,
-          mudrasReached,
-          elapsedSec,
-        };
-        return next;
-      });
-      setHasUnsavedDuelChanges(true);
-
-      if (outcome !== 'pending') {
-        setRewardPreview({
-          familyName: getDisplayFamilyName(target.name, id),
-          outcome,
-          mudrasReached,
-          elapsedSec,
-        });
-        mudraAudio.playTortueReward(outcome === 'complete');
-      }
-    },
-    [maxFinaleCount],
+    [ensureDuelClockStarted, maxFinaleCount],
   );
 
   const handlePreviewOutcome = useCallback((id: 0 | 1) => {
@@ -1043,252 +854,13 @@ export default function App() {
     dismissFullscreenRevealCard();
   }, [dismissFullscreenRevealCard]);
 
-  const handleSignInServer = useCallback(async () => {
-    if (isAuthBusy) return;
-    setIsAuthBusy(true);
-    try {
-      await signInWithPopup(auth, googleProvider);
-      showSaveToast('Serveur connecté · vos duels sont sauvegardés');
-    } catch (error) {
-      console.error('Connexion Google annulée ou impossible:', error);
-      showSaveToast('Connexion annulée · session locale active');
-    } finally {
-      setIsAuthBusy(false);
-    }
-  }, [isAuthBusy, showSaveToast]);
-
-  const handleSignOutServer = useCallback(async () => {
-    if (isAuthBusy) return;
-    setIsAuthBusy(true);
-    try {
-      await signOut(auth);
-      showSaveToast('Déconnecté · mode session locale');
-    } catch (error) {
-      console.error('Déconnexion impossible:', error);
-    } finally {
-      setIsAuthBusy(false);
-    }
-  }, [isAuthBusy, showSaveToast]);
-
-  const persistDuelRecord = useCallback(
-    (record: SavedDuelRecord) => {
-      setSavedDuels((prev) => [record, ...prev]);
-      const activeUser = serverUserRef.current;
-      if (activeUser) {
-        void saveDuelToServer(activeUser.uid, record).catch((err) => {
-          console.error('Sauvegarde serveur impossible:', err);
-          showSaveToast(`Duel #${record.duelNumber} gardé en session locale`);
-        });
-      }
-    },
-    [showSaveToast],
-  );
-
-  const buildCurrentDuelRecord = useCallback((): SavedDuelRecord => {
-    const [f0, f1] = familiesRef.current;
-    const nextNumber =
-      savedDuelsRef.current.reduce((max, d) => Math.max(max, d.duelNumber), 0) + 1;
-
-    return {
-      id: `duel-${Date.now()}-${nextNumber}`,
-      duelNumber: nextNumber,
-      recordedAtIso: new Date().toISOString(),
-      familyA: {
-        name: getDisplayFamilyName(f0.name, 0),
-        outcome: f0.outcome,
-        levelResults: [...f0.levelResults],
-        mudrasReached: f0.mudrasReached ?? (sequenceRef.current.length > 0 ? sequenceRef.current.length : null),
-        elapsedSec: f0.elapsedSec ?? (duelElapsedSecRef.current > 0 ? duelElapsedSecRef.current : null),
-      },
-      familyB: {
-        name: getDisplayFamilyName(f1.name, 1),
-        outcome: f1.outcome,
-        levelResults: [...f1.levelResults],
-        mudrasReached: f1.mudrasReached ?? (sequenceRef.current.length > 0 ? sequenceRef.current.length : null),
-        elapsedSec: f1.elapsedSec ?? (duelElapsedSecRef.current > 0 ? duelElapsedSecRef.current : null),
-      },
-    };
-  }, []);
-
-  const handleSaveDuel = useCallback(() => {
-    const record = buildCurrentDuelRecord();
-    persistDuelRecord(record);
-    setHasUnsavedDuelChanges(false);
-    showSaveToast(
-      serverUserRef.current
-        ? `Duel #${record.duelNumber} enregistré sur le serveur`
-        : `Duel #${record.duelNumber} enregistré dans la session`,
-    );
-  }, [buildCurrentDuelRecord, persistDuelRecord, showSaveToast]);
-
-  const handleStartNewDuel = useCallback(() => {
-    if (isSpinningRef.current) return;
-    const [f0, f1] = familiesRef.current;
-    const hasContent =
-      f0.name.trim().length > 0 ||
-      f1.name.trim().length > 0 ||
-      f0.outcome !== 'pending' ||
-      f1.outcome !== 'pending' ||
-      countEvaluatedLevels(f0.levelResults) > 0 ||
-      countEvaluatedLevels(f1.levelResults) > 0 ||
-      sequenceRef.current.length > 0;
-
-    // Clicking "Duel suivant" always records the active duel in the game session (and server if connected)
-    if (hasUnsavedDuelChanges || hasContent) {
-      const record = buildCurrentDuelRecord();
-      persistDuelRecord(record);
-      showSaveToast(
-        serverUserRef.current
-          ? `Duel #${record.duelNumber} enregistré (serveur) · duel suivant prêt`
-          : `Duel #${record.duelNumber} enregistré dans la session · duel suivant prêt`,
-      );
-    } else {
-      showSaveToast('Prêt pour le duel suivant');
-    }
-
-    setFamilies(createDefaultDuelFamilies());
-    setHasUnsavedDuelChanges(false);
-    setRewardPreview(null);
-    resetWheelForNextRun();
-  }, [
-    hasUnsavedDuelChanges,
-    buildCurrentDuelRecord,
-    persistDuelRecord,
-    showSaveToast,
-    resetWheelForNextRun,
-  ]);
-
-  const handleUpdateSavedDuelOutcome = useCallback(
-    (duelId: string, side: 'familyA' | 'familyB', outcome: FamilyOutcome) => {
-      setSavedDuels((prev) =>
-        prev.map((d) => {
-          if (d.id !== duelId) return d;
-          return {
-            ...d,
-            [side]: {
-              ...d[side],
-              outcome,
-            },
-          };
-        }),
-      );
-      if (serverUserRef.current) {
-        void updateDuelOutcomeOnServer(duelId, side, outcome).catch((err) => {
-          console.error('Mise à jour serveur impossible:', err);
-        });
-      }
-    },
-    [],
-  );
-
-  const handleUpdateSavedDuelLevelResult = useCallback(
-    (
-      duelId: string,
-      side: 'familyA' | 'familyB',
-      targetLevelIdx: number,
-      status: LevelAttemptStatus,
-    ) => {
-      let updatedListForServer: LevelAttemptStatus[] | null = null;
-      setSavedDuels((prev) =>
-        prev.map((d) => {
-          if (d.id !== duelId) return d;
-          const nextResults = [...d[side].levelResults];
-          if (targetLevelIdx >= 0 && targetLevelIdx < nextResults.length) {
-            nextResults[targetLevelIdx] = status;
-          }
-          updatedListForServer = nextResults;
-          return {
-            ...d,
-            [side]: {
-              ...d[side],
-              levelResults: nextResults,
-            },
-          };
-        }),
-      );
-      if (serverUserRef.current && updatedListForServer) {
-        void updateDuelLevelResultsOnServer(duelId, side, updatedListForServer).catch((err) => {
-          console.error('Mise à jour niveaux serveur impossible:', err);
-        });
-      }
-    },
-    [],
-  );
-
-  const handleDeleteSavedDuel = useCallback((duelId: string) => {
-    setSavedDuels((prev) => prev.filter((d) => d.id !== duelId));
-    if (serverUserRef.current) {
-      void deleteDuelOnServer(duelId).catch((err) => {
-        console.error('Suppression serveur impossible:', err);
-      });
-    }
-  }, []);
-
-  const handleClearAllSavedDuels = useCallback(() => {
-    const idsToRemove = savedDuelsRef.current.map((d) => d.id);
-    setSavedDuels([]);
-    if (serverUserRef.current) {
-      idsToRemove.forEach((id) => {
-        void deleteDuelOnServer(id).catch((err) => {
-          console.error('Suppression serveur impossible:', err);
-        });
-      });
-    }
-  }, []);
-
   const handleConfirmReset = useCallback(() => {
     if (isSpinningRef.current) return;
     resetWheelForNextRun();
     setRewardPreview(null);
-    setFamilies((prev) => [
-      {
-        id: 0,
-        name: clearFamilyNamesOnReset ? '' : prev[0].name,
-        outcome: 'pending',
-        levelResults: createEmptyLevelResults(),
-        mudrasReached: null,
-        elapsedSec: null,
-      },
-      {
-        id: 1,
-        name: clearFamilyNamesOnReset ? '' : prev[1].name,
-        outcome: 'pending',
-        levelResults: createEmptyLevelResults(),
-        mudrasReached: null,
-        elapsedSec: null,
-      },
-    ]);
-    setHasUnsavedDuelChanges(false);
-    setClearFamilyNamesOnReset(false);
+    setFamilies(createDefaultDuelFamilies());
     setIsResetModalOpen(false);
-  }, [resetWheelForNextRun, clearFamilyNamesOnReset]);
-
-  const handleConfirmResetKeepFamilies = useCallback(() => {
-    if (isSpinningRef.current) return;
-    resetWheelForNextRun();
-    setRewardPreview(null);
-    setFamilies((prev) => [
-      {
-        id: 0,
-        name: prev[0].name,
-        outcome: 'pending',
-        levelResults: createEmptyLevelResults(),
-        mudrasReached: null,
-        elapsedSec: null,
-      },
-      {
-        id: 1,
-        name: prev[1].name,
-        outcome: 'pending',
-        levelResults: createEmptyLevelResults(),
-        mudrasReached: null,
-        elapsedSec: null,
-      },
-    ]);
-    setHasUnsavedDuelChanges(false);
-    setIsResetKeepFamiliesModalOpen(false);
-    showSaveToast('Jeu réinitialisé · noms des familles conservés');
-  }, [resetWheelForNextRun, showSaveToast]);
+  }, [resetWheelForNextRun]);
 
   const handleReturnToHome = useCallback(() => {
     if (isSpinningRef.current) return;
@@ -1307,10 +879,16 @@ export default function App() {
     window.scrollTo(0, 0);
   }, []);
 
-  const handleStartNewFamiliesFromHome = useCallback(() => {
+  const handleResetFromHome = useCallback(() => {
+    if (isSpinningRef.current) return;
     mudraAudio.unlock();
-    handleStartNewDuel();
-  }, [handleStartNewDuel]);
+    resetWheelForNextRun();
+    setRewardPreview(null);
+    setFamilies(createDefaultDuelFamilies());
+    setIsGameStagePrewarmed(true);
+    setActiveScreen('game');
+    window.scrollTo(0, 0);
+  }, [resetWheelForNextRun]);
 
   const hasActiveGame =
     sequence.length > 0 ||
@@ -1462,15 +1040,10 @@ export default function App() {
       {/* Active Screen: Players Welcome Screen + Pre-warmed Instant Game Stage */}
       {activeScreen === 'home' && (
         <HomeScreen
-          families={families}
-          onRenameFamily={handleRenameFamily}
-          onClearFamily={handleClearFamily}
           mudraSprites={mudraSprites}
           hasActiveGame={hasActiveGame}
-          savedDuelsCount={savedDuels.length}
           onEnterGame={handleEnterGame}
-          onStartNewFamilies={handleStartNewFamiliesFromHome}
-          onOpenHistory={() => setIsHistoryOpen(true)}
+          onResetGame={handleResetFromHome}
         />
       )}
 
@@ -1498,59 +1071,101 @@ export default function App() {
               : undefined
           }
         >
-          {/* Top Bar visible only in Giant Wheel Fullscreen Mode */}
+          {/* Top Bar & High-Contrast 7-Level Red/White Strip visible only in Giant Wheel Fullscreen Mode */}
           {isWheelFullscreen && (
-            <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2.5">
-              <button
-                type="button"
-                onClick={() => void handleExitWheelFullscreen()}
-                className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border-2 border-[#FCD34D] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-4 sm:px-5 py-2 text-sm sm:text-base font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/40 transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
-              >
-                <Minimize2 className="h-4 w-4 sm:h-5 sm:w-5 shrink-0" aria-hidden="true" />
-                <span>Quitter plein écran</span>
-              </button>
-
-              <div className="text-center">
-                <p className="text-sm sm:text-lg font-extrabold uppercase tracking-wider text-[#FFF8EA] tabular-nums">
-                  {currentLevel.label} · {sequence.length} / {targetCount} mudras
-                </p>
-                {sequence.length > 0 && (
-                  <p className="text-xs sm:text-sm font-bold text-[#FDE68A]">
-                    Dernier tiré : #{sequence.length}{' '}
-                    {sequence[sequence.length - 1].mudra.name.toUpperCase()} —{' '}
-                    {sequence[sequence.length - 1].mudra.meaningFr}
-                  </p>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                {sequence.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      dismissFullscreenRevealCard();
-                      setIsSequenceFullscreenOpen(true);
-                    }}
-                    className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] px-4 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-[#2B0508] shadow-md shadow-black/30 transition-colors hover:from-[#FCD34D] hover:to-[#EAB308] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap tabular-nums"
-                  >
-                    <Maximize2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-                    <span>Enchaînement ({sequence.length})</span>
-                  </button>
-                )}
-
+            <div className="mx-auto flex w-full max-w-6xl flex-col items-center gap-2">
+              <div className="flex w-full flex-wrap items-center justify-between gap-2.5">
                 <button
                   type="button"
-                  onClick={handleToggleMute}
-                  aria-pressed={!isMuted}
-                  aria-label={isMuted ? 'Activer le son de la roue' : 'Couper le son de la roue'}
-                  className="inline-flex min-h-[48px] min-w-[48px] items-center justify-center rounded-xl border border-[#F5B324]/55 bg-[#4A070D]/90 text-[#FCD34D] transition-colors hover:bg-[#6E0D15] hover:border-[#FCD34D] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                  onClick={() => void handleExitWheelFullscreen()}
+                  className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border-2 border-[#FCD34D] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-4 sm:px-5 py-2 text-sm sm:text-base font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/40 transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
                 >
-                  {isMuted || sfxVolume <= 0.001 ? (
-                    <VolumeX className="h-5 w-5 text-[#F3D9A4]/60" aria-hidden="true" />
-                  ) : (
-                    <Volume2 className="h-5 w-5 text-[#FCD34D]" aria-hidden="true" />
-                  )}
+                  <Minimize2 className="h-4 w-4 sm:h-5 sm:w-5 shrink-0" aria-hidden="true" />
+                  <span>Quitter plein écran</span>
                 </button>
+
+                {/* High-Contrast Current Level Badge (Red background, Bold White text) */}
+                <div className="flex flex-col items-center rounded-xl border-2 border-[#FCD34D] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-4 sm:px-6 py-1.5 text-center shadow-lg shadow-black/45">
+                  <p className="text-base sm:text-xl font-extrabold uppercase tracking-wider text-white tabular-nums leading-tight">
+                    {currentLevel.label} · {sequence.length} / {targetCount} mudras
+                  </p>
+                  {sequence.length > 0 && (
+                    <p className="mt-0.5 text-xs sm:text-sm font-bold text-white/95">
+                      Dernier : #{sequence.length}{' '}
+                      {sequence[sequence.length - 1].mudra.name.toUpperCase()} —{' '}
+                      {sequence[sequence.length - 1].mudra.meaningFr}
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {sequence.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        dismissFullscreenRevealCard();
+                        setIsSequenceFullscreenOpen(true);
+                      }}
+                      className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] px-4 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-[#2B0508] shadow-md shadow-black/30 transition-colors hover:from-[#FCD34D] hover:to-[#EAB308] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap tabular-nums"
+                    >
+                      <Maximize2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span>Enchaînement ({sequence.length})</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleToggleMute}
+                    aria-pressed={!isMuted}
+                    aria-label={isMuted ? 'Activer le son de la roue' : 'Couper le son de la roue'}
+                    className="inline-flex min-h-[46px] min-w-[46px] items-center justify-center rounded-xl border border-[#F5B324]/55 bg-[#4A070D]/90 text-[#FCD34D] transition-colors hover:bg-[#6E0D15] hover:border-[#FCD34D] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                  >
+                    {isMuted || sfxVolume <= 0.001 ? (
+                      <VolumeX className="h-5 w-5 text-[#F3D9A4]/60" aria-hidden="true" />
+                    ) : (
+                      <Volume2 className="h-5 w-5 text-[#FCD34D]" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* All 7 Levels Bar (Red Background, Crisp White Text) */}
+              <div
+                className="grid w-full max-w-5xl grid-cols-7 gap-1.5"
+                role="group"
+                aria-label="Niveaux du jeu"
+              >
+                {LEVELS.map((lvl) => {
+                  const isCurrent = lvl.index === levelIndex;
+                  const isDone =
+                    lvl.index < levelIndex ||
+                    (lvl.index === levelIndex && sequence.length >= lvl.targetCount);
+
+                  return (
+                    <button
+                      key={lvl.index}
+                      type="button"
+                      onClick={() => handleSelectLevel(lvl.index)}
+                      disabled={isWheelBusy}
+                      aria-pressed={isCurrent}
+                      aria-label={`${lvl.label} — ${lvl.targetCount} mudras`}
+                      className={`inline-flex min-h-[38px] items-center justify-center gap-1 rounded-xl px-2 py-1.5 text-xs sm:text-sm font-extrabold text-white tabular-nums transition-all cursor-pointer touch-manipulation disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] ${
+                        isCurrent
+                          ? 'border-2 border-[#FEF08A] bg-[#DC2626] shadow-lg shadow-black/45 ring-2 ring-[#FCD34D]/60 scale-[1.03]'
+                          : isDone
+                            ? 'border border-[#FCD34D]/80 bg-[#B91C1C] hover:bg-[#DC2626]'
+                            : 'border border-white/25 bg-[#7F1D1D]/90 text-white/90 hover:bg-[#991B1B] hover:text-white'
+                      }`}
+                    >
+                      {isDone && !isCurrent && (
+                        <Check className="h-3.5 w-3.5 shrink-0 text-[#6EE7B7] stroke-[2.75]" aria-hidden="true" />
+                      )}
+                      <span className="truncate">
+                        {lvl.shortLabel} - {lvl.targetCount}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -1619,7 +1234,26 @@ export default function App() {
               isWheelFullscreen ? 'max-w-[660px]' : 'mt-3 max-w-[620px]'
             }`}
           >
-            {(!isWheelFullscreen || (!canAdvanceLevel && !canValidateFinale)) && (
+            {hasReachedLevelTarget && !isSpinning && !isFinaleCompleted ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className="animate-lotus-reveal flex w-full flex-col items-center justify-center rounded-2xl border-2 border-[#FEF08A] bg-gradient-to-b from-[#FCD34D] via-[#F5B324] to-[#D97706] px-5 py-3.5 text-center text-[#2B0508] shadow-xl shadow-black/40"
+              >
+                <div className="flex items-center justify-center gap-2 text-xs sm:text-sm font-extrabold uppercase tracking-widest text-[#5C0810] tabular-nums">
+                  <Hand className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    {currentLevel.label} · {targetCount} / {targetCount} mudras
+                  </span>
+                </div>
+                <p className="mt-1 text-xl sm:text-2xl font-extrabold uppercase tracking-wide text-[#240306] leading-tight">
+                  Maintenant, c’est à vous de jouer !
+                </p>
+                <p className="mt-0.5 text-xs sm:text-sm font-bold text-[#4A070D]">
+                  Reproduisez les {targetCount} mudras dans l’ordre
+                </p>
+              </div>
+            ) : (
               <button
                 type="button"
                 onClick={handleSpin}
@@ -1639,18 +1273,6 @@ export default function App() {
                   <>
                     <Trophy className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
                     <span>FINALE VALIDÉE ({maxFinaleCount} MUDRAS)</span>
-                  </>
-                ) : hasDrawnFinaleMudras ? (
-                  <>
-                    <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                    <span>FINALE PRÊTE ({maxFinaleCount} MUDRAS)</span>
-                  </>
-                ) : hasReachedLevelTarget ? (
-                  <>
-                    <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                    <span>
-                      {currentLevel.label.toUpperCase()} ATTEINT ({targetCount} MUDRAS)
-                    </span>
                   </>
                 ) : (
                   <>
@@ -1689,14 +1311,10 @@ export default function App() {
 
             {!isWheelFullscreen && (
               <div className="mt-0.5 flex w-full flex-wrap items-center justify-between gap-2 px-1">
-                <button
-                  type="button"
-                  onClick={() => void handleEnterWheelFullscreen()}
-                  className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/75 bg-[#5E0A12] px-3.5 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FDE68A] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
-                >
-                  <Maximize2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                  <span>Roue en plein écran</span>
-                </button>
+                <p className="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#F3D9A4]/80">
+                  <Hand className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                  <span>Tournez, lancez ou arrêtez la roue directement au doigt</span>
+                </p>
 
                 {/* Slim Wheel & SFX Volume Slider directly beneath the wheel */}
                 <div
@@ -1799,7 +1417,18 @@ export default function App() {
                     {mudra.meaningFr}
                   </p>
 
-                  {/* Smooth 3-second visual timer bar */}
+                  {stepNumber >= targetCount && (
+                    <div className="mt-4 rounded-2xl border-2 border-[#FEF08A] bg-gradient-to-b from-[#FCD34D] to-[#D97706] px-4 py-2.5 text-center text-[#2B0508] shadow-lg shadow-black/35">
+                      <p className="text-base sm:text-lg font-extrabold uppercase tracking-wide leading-tight">
+                        Maintenant, c’est à vous de jouer !
+                      </p>
+                      <p className="mt-0.5 text-xs font-bold text-[#4A070D] tabular-nums">
+                        Fin du {currentLevel.label} · {targetCount} / {targetCount} mudras
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Smooth 5-second visual timer bar */}
                   <div
                     className="mt-5 h-2 w-full overflow-hidden rounded-full bg-[#240306]"
                     aria-hidden="true"
@@ -1817,17 +1446,18 @@ export default function App() {
           })()}
         </section>
 
-        {/* RIGHT COLUMN: All Info (Famille 1 & 2, Les niveaux, Enchaînements) */}
+        {/* RIGHT COLUMN: All Info (Team 1 & Team 2, Les niveaux, Enchaînements) */}
         <section
-          aria-label="Familles, niveaux et enchaînements"
+          aria-label="Équipes, niveaux et enchaînements"
           className="flex flex-col gap-4 lg:col-span-5"
         >
-          {/* 1. Famille n°1 CONTRE Famille n°2 + validation par niveau */}
+          {/* 1. Team 1 CONTRE Team 2 + validation par niveau */}
           <FamilyDuelBar
             families={families}
             currentLevelIndex={levelIndex}
             currentLevelLabel={currentLevel.label}
             onSetFamilyLevelResult={handleSetFamilyLevelResult}
+            onPreviewOutcome={handlePreviewOutcome}
           />
           {/* Finale Victory Banner */}
           {isFinaleCompleted && (
@@ -1967,7 +1597,11 @@ export default function App() {
                         <Trophy className="h-3.5 w-3.5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
                       )}
                       <span className="truncate">
-                        {lvl.shortLabel} - {lvl.targetCount} Mudras
+                        {lvl.isFinale
+                          ? `Niv. 7 · ${lvl.shortLabel} - ${lvl.targetCount} Mudras (100%)`
+                          : lvl.index === 3
+                            ? `${lvl.shortLabel} - ${lvl.targetCount} Mudras (½)`
+                            : `${lvl.shortLabel} - ${lvl.targetCount} Mudras`}
                       </span>
                     </button>
                   );
@@ -2203,42 +1837,26 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={() => setIsResetKeepFamiliesModalOpen(true)}
+                onClick={() => setIsResetModalOpen(true)}
                 disabled={!canResetCurrentRun || isWheelBusy}
                 className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border border-[#FCA5A5]/45 bg-[#4A070D] px-4 py-2.5 text-sm font-extrabold text-[#FEE2E2] transition-colors hover:bg-[#6E0D15] hover:border-[#FCA5A5] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
               >
                 <RotateCcw className="h-4 w-4 shrink-0 text-[#FCA5A5]" aria-hidden="true" />
-                <span>Reset du jeu (garder les familles)</span>
+                <span>Reset du jeu</span>
               </button>
             </div>
           </div>
         </section>
-
-        {/* BOTTOM FULL-WIDTH RECORDING BAR: Tout en bas quand la partie est finie + Duel suivant */}
-        <div className="w-full lg:col-span-12">
-          <DuelFinishFooter
-            families={families}
-            isGameFinished={isGameFinished}
-            savedDuelsCount={savedDuels.length}
-            saveFeedback={saveFeedback}
-            serverUserEmail={serverUser?.email ?? null}
-            isAuthBusy={isAuthBusy}
-            onSignInServer={() => void handleSignInServer()}
-            onSignOutServer={() => void handleSignOutServer()}
-            onSetFamilyOutcome={handleSetFamilyOutcome}
-            onPreviewOutcome={handlePreviewOutcome}
-            onSaveDuel={handleSaveDuel}
-            onStartNewDuel={handleStartNewDuel}
-            onReturnHome={handleReturnToHome}
-            onOpenHistory={() => setIsHistoryOpen(true)}
-            rewardPreview={rewardPreview}
-            onCloseRewardPreview={() => setRewardPreview(null)}
-          />
-        </div>
       </main>
       )}
 
-      {/* New Game Confirmation Modal (never uses window.confirm) */}
+      {/* Golden Turtle Reward Modal (triggered from Team 1 / Team 2 reward badge) */}
+      <TortueRewardModal
+        rewardPreview={rewardPreview}
+        onClose={() => setRewardPreview(null)}
+      />
+
+      {/* New Game / Reset Confirmation Modal (never uses window.confirm) */}
       {isResetModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-[#1A0204]/75 p-4 backdrop-blur-xs"
@@ -2257,88 +1875,26 @@ export default function App() {
                 id="reset-modal-title"
                 className="text-xl font-extrabold text-[#FFF8EA]"
               >
-                Recommencer une nouvelle partie ?
+                Réinitialiser la partie ?
               </h2>
             </div>
 
-            <p className="mt-3 text-sm sm:text-base leading-relaxed text-[#F3D9A4]/85">
-              La séquence actuelle, le niveau ({currentLevel.label}) ainsi que les
-              images Tortue d’Or des deux familles seront réinitialisés au Niveau 1.
+            <p className="mt-3 text-sm sm:text-base leading-relaxed text-[#F3D9A4]/88">
+              Tous les mudras tirés, la progression des niveaux ({currentLevel.label}) et
+              les validations de Team 1 et Team 2 seront réinitialisés au Niveau 1.
             </p>
-
-            <label className="mt-4 flex cursor-pointer items-center gap-2.5 rounded-xl border border-[#F5B324]/25 bg-[#240306]/70 px-3.5 py-2.5 text-sm font-semibold text-[#FFF8EA]">
-              <input
-                type="checkbox"
-                checked={clearFamilyNamesOnReset}
-                onChange={(e) => setClearFamilyNamesOnReset(e.target.checked)}
-                className="h-4 w-4 accent-[#DC2626] cursor-pointer"
-              />
-              <span>Effacer aussi les noms des deux familles</span>
-            </label>
 
             <div className="mt-6 flex flex-col-reverse gap-2.5 sm:flex-row sm:justify-end">
               <button
                 type="button"
                 onClick={() => setIsResetModalOpen(false)}
-                className="min-h-[46px] rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-5 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
-              >
-                Annuler
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmReset}
-                className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
-              >
-                <RotateCcw className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span>OUI, NOUVELLE PARTIE</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Quick Reset Game Confirmation Modal (always keeps both family names) */}
-      {isResetKeepFamiliesModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1A0204]/75 p-4 backdrop-blur-xs"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="reset-keep-families-title"
-          onClick={() => setIsResetKeepFamiliesModalOpen(false)}
-        >
-          <div
-            className="animate-lotus-reveal w-full max-w-md rounded-2xl border-2 border-[#F5B324]/60 bg-[#3B050A] p-6 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3">
-              <LotusEmblem className="h-8 w-8 shrink-0" />
-              <h2
-                id="reset-keep-families-title"
-                className="text-xl font-extrabold text-[#FFF8EA]"
-              >
-                Réinitialiser le jeu ?
-              </h2>
-            </div>
-
-            <p className="mt-3 text-sm sm:text-base leading-relaxed text-[#F3D9A4]/88">
-              Tous les mudras tirés et la progression des niveaux seront effacés (retour
-              au Niveau 1). Les noms des deux familles (
-              <strong className="text-[#FFF8EA]">{familyADisplayName}</strong> et{' '}
-              <strong className="text-[#FFF8EA]">{familyBDisplayName}</strong>) seront
-              conservés.
-            </p>
-
-            <div className="mt-6 flex flex-col-reverse gap-2.5 sm:flex-row sm:justify-end">
-              <button
-                type="button"
-                onClick={() => setIsResetKeepFamiliesModalOpen(false)}
                 className="min-h-[48px] rounded-xl border border-[#F5B324]/45 bg-[#5E0A12] px-5 py-2.5 text-sm font-bold text-[#FFF8EA] transition-colors hover:bg-[#7A1019] hover:border-[#FCD34D] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
               >
                 Annuler
               </button>
               <button
                 type="button"
-                onClick={handleConfirmResetKeepFamilies}
+                onClick={handleConfirmReset}
                 className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/80 bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-5 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white shadow-xs transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
               >
                 <RotateCcw className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -2348,26 +1904,6 @@ export default function App() {
           </div>
         </div>
       )}
-
-      {/* Persistent Matchup History Modal ("Carnet des duels · Qui contre Qui") */}
-      <DuelHistoryModal
-        open={isHistoryOpen}
-        duels={savedDuels}
-        onClose={() => setIsHistoryOpen(false)}
-        onUpdateDuelOutcome={handleUpdateSavedDuelOutcome}
-        onUpdateDuelLevelResult={handleUpdateSavedDuelLevelResult}
-        onPreviewDuelSide={(familyName, outcome, mudrasReached, elapsedSec) => {
-          setIsHistoryOpen(false);
-          setRewardPreview({
-            familyName,
-            outcome,
-            mudrasReached,
-            elapsedSec,
-          });
-        }}
-        onDeleteDuel={handleDeleteSavedDuel}
-        onClearAllDuels={handleClearAllSavedDuels}
-      />
 
       {/* Fullscreen Complete Enchaînements Popup (all drawn mudras at once for audience visibility) */}
       {isSequenceFullscreenOpen && sequence.length > 0 && (() => {
