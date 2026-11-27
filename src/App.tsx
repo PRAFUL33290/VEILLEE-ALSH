@@ -27,6 +27,7 @@ import {
 import {
   LEVELS,
   MUDRAS,
+  MudraSector,
   SECTOR_COUNT,
   SequenceEntry,
   getUniformRandomFloat,
@@ -212,6 +213,7 @@ export default function App() {
   const [mudraSprites, setMudraSprites] = useState<Record<number, MudraSpriteAsset>>({});
   const [zoomedMudraIndex, setZoomedMudraIndex] = useState<number | null>(null);
   const [isSequenceFullscreenOpen, setIsSequenceFullscreenOpen] = useState(false);
+  const [isWheelFullscreen, setIsWheelFullscreen] = useState(false);
   const [activeScreen, setActiveScreen] = useState<'home' | 'game'>('home');
   const [isGameStagePrewarmed, setIsGameStagePrewarmed] = useState(false);
 
@@ -258,9 +260,20 @@ export default function App() {
   duelElapsedSecRef.current = duelElapsedSec;
   const [levelSuccessAnnouncement, setLevelSuccessAnnouncement] =
     useState<LevelSuccessAnnouncement | null>(null);
+  const [fullscreenRevealCard, setFullscreenRevealCard] = useState<{
+    id: number;
+    stepNumber: number;
+    mudra: MudraSector;
+    isLeaving: boolean;
+  } | null>(null);
   const saveFeedbackTimerRef = useRef<number | null>(null);
   const levelSuccessTimerRef = useRef<number | null>(null);
   const levelSuccessIdRef = useRef(0);
+  const isWheelFullscreenRef = useRef(isWheelFullscreen);
+  isWheelFullscreenRef.current = isWheelFullscreen;
+  const fullscreenRevealLeaveTimerRef = useRef<number | null>(null);
+  const fullscreenRevealHideTimerRef = useRef<number | null>(null);
+  const fullscreenRevealIdRef = useRef(0);
 
   useEffect(() => {
     try {
@@ -336,6 +349,12 @@ export default function App() {
       if (levelSuccessTimerRef.current !== null) {
         window.clearTimeout(levelSuccessTimerRef.current);
       }
+      if (fullscreenRevealLeaveTimerRef.current !== null) {
+        window.clearTimeout(fullscreenRevealLeaveTimerRef.current);
+      }
+      if (fullscreenRevealHideTimerRef.current !== null) {
+        window.clearTimeout(fullscreenRevealHideTimerRef.current);
+      }
       mudraAudio.setMusicPlaying(false);
     };
   }, []);
@@ -385,9 +404,9 @@ export default function App() {
     }
   }, [isSequenceHidden, sequence.length, zoomedMudraIndex, isSequenceFullscreenOpen]);
 
-  // Keyboard navigation & scroll lock for fullscreen Mudra / sequence viewers
+  // Keyboard navigation & scroll lock for fullscreen Mudra / sequence / wheel viewers
   useEffect(() => {
-    if (zoomedMudraIndex === null && !isSequenceFullscreenOpen) return;
+    if (zoomedMudraIndex === null && !isSequenceFullscreenOpen && !isWheelFullscreen) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
@@ -396,8 +415,10 @@ export default function App() {
         event.preventDefault();
         if (zoomedMudraIndex !== null) {
           setZoomedMudraIndex(null);
-        } else {
+        } else if (isSequenceFullscreenOpen) {
           setIsSequenceFullscreenOpen(false);
+        } else if (isWheelFullscreen) {
+          setIsWheelFullscreen(false);
         }
       } else if (zoomedMudraIndex !== null && event.key === 'ArrowLeft' && sequence.length > 1) {
         event.preventDefault();
@@ -417,7 +438,7 @@ export default function App() {
       document.body.style.overflow = prevOverflow;
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [zoomedMudraIndex, isSequenceFullscreenOpen, sequence.length]);
+  }, [zoomedMudraIndex, isSequenceFullscreenOpen, isWheelFullscreen, sequence.length]);
 
   // Track total duel elapsed seconds smoothly once the duel starts
   useEffect(() => {
@@ -588,6 +609,54 @@ export default function App() {
     }
   }, []);
 
+  const handleEnterWheelFullscreen = useCallback(async () => {
+    setIsWheelFullscreen(true);
+    const rootEl = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+    };
+    try {
+      if (!document.fullscreenElement && !doc.webkitFullscreenElement) {
+        if (rootEl.requestFullscreen) {
+          await rootEl.requestFullscreen();
+        } else if (rootEl.webkitRequestFullscreen) {
+          await rootEl.webkitRequestFullscreen();
+        }
+      }
+    } catch {
+      // iPadOS Safari / sandboxed iframe fallback: fixed full-viewport wheel stage is already active
+    }
+  }, []);
+
+  const handleExitWheelFullscreen = useCallback(async () => {
+    if (fullscreenRevealLeaveTimerRef.current !== null) {
+      window.clearTimeout(fullscreenRevealLeaveTimerRef.current);
+      fullscreenRevealLeaveTimerRef.current = null;
+    }
+    if (fullscreenRevealHideTimerRef.current !== null) {
+      window.clearTimeout(fullscreenRevealHideTimerRef.current);
+      fullscreenRevealHideTimerRef.current = null;
+    }
+    setFullscreenRevealCard(null);
+    setIsWheelFullscreen(false);
+
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+      webkitExitFullscreen?: () => Promise<void> | void;
+    };
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        await document.exitFullscreen();
+      } else if (doc.webkitFullscreenElement && doc.webkitExitFullscreen) {
+        await doc.webkitExitFullscreen();
+      }
+    } catch {
+      // Ignore exit errors
+    }
+  }, []);
+
   const ensureDuelClockStarted = useCallback(() => {
     setDuelStartedAtMs((prev) => (prev === null ? Date.now() : prev));
   }, []);
@@ -679,18 +748,32 @@ export default function App() {
     wheelRef.current?.spinTo(selectedIndex, durationMs);
   }, []);
 
+  const dismissFullscreenRevealCard = useCallback(() => {
+    if (fullscreenRevealLeaveTimerRef.current !== null) {
+      window.clearTimeout(fullscreenRevealLeaveTimerRef.current);
+      fullscreenRevealLeaveTimerRef.current = null;
+    }
+    if (fullscreenRevealHideTimerRef.current !== null) {
+      window.clearTimeout(fullscreenRevealHideTimerRef.current);
+      fullscreenRevealHideTimerRef.current = null;
+    }
+    setFullscreenRevealCard(null);
+  }, []);
+
   const handleSpin = useCallback(() => {
     mudraAudio.unlock();
     if (isSpinningRef.current || hasReachedLevelTarget) return;
+    dismissFullscreenRevealCard();
     ensureDuelClockStarted();
     launchWheelSpin();
-  }, [hasReachedLevelTarget, ensureDuelClockStarted, launchWheelSpin]);
+  }, [hasReachedLevelTarget, dismissFullscreenRevealCard, ensureDuelClockStarted, launchWheelSpin]);
 
   const handleManualSpinStart = useCallback(() => {
+    dismissFullscreenRevealCard();
     isSpinningRef.current = true;
     setIsSpinning(true);
     ensureDuelClockStarted();
-  }, [ensureDuelClockStarted]);
+  }, [dismissFullscreenRevealCard, ensureDuelClockStarted]);
 
   const handleSpinInterrupt = useCallback(() => {
     mudraAudio.stopSpinFairy();
@@ -718,6 +801,34 @@ export default function App() {
 
       // Always wait for the host to explicitly validate the Finale before launching the victory celebration
       mudraAudio.playMudraLand();
+
+      // In Giant Wheel Fullscreen mode, display the chosen mudra card prominently for 5 seconds
+      if (isWheelFullscreenRef.current) {
+        if (fullscreenRevealLeaveTimerRef.current !== null) {
+          window.clearTimeout(fullscreenRevealLeaveTimerRef.current);
+        }
+        if (fullscreenRevealHideTimerRef.current !== null) {
+          window.clearTimeout(fullscreenRevealHideTimerRef.current);
+        }
+        fullscreenRevealIdRef.current += 1;
+        const cardId = fullscreenRevealIdRef.current;
+        setFullscreenRevealCard({
+          id: cardId,
+          stepNumber: next.length,
+          mudra: drawnMudra,
+          isLeaving: false,
+        });
+        fullscreenRevealLeaveTimerRef.current = window.setTimeout(() => {
+          setFullscreenRevealCard((prev) =>
+            prev && prev.id === cardId ? { ...prev, isLeaving: true } : prev,
+          );
+          fullscreenRevealLeaveTimerRef.current = null;
+        }, 4700);
+        fullscreenRevealHideTimerRef.current = window.setTimeout(() => {
+          setFullscreenRevealCard((prev) => (prev && prev.id === cardId ? null : prev));
+          fullscreenRevealHideTimerRef.current = null;
+        }, 5000);
+      }
     },
     [],
   );
@@ -929,7 +1040,8 @@ export default function App() {
       levelSuccessTimerRef.current = null;
     }
     setLevelSuccessAnnouncement(null);
-  }, []);
+    dismissFullscreenRevealCard();
+  }, [dismissFullscreenRevealCard]);
 
   const handleSignInServer = useCallback(async () => {
     if (isAuthBusy) return;
@@ -1183,6 +1295,7 @@ export default function App() {
     mudraAudio.stopSpinFairy();
     setZoomedMudraIndex(null);
     setIsSequenceFullscreenOpen(false);
+    setIsWheelFullscreen(false);
     setActiveScreen('home');
     window.scrollTo(0, 0);
   }, []);
@@ -1368,13 +1481,82 @@ export default function App() {
           activeScreen === 'game' ? 'flex lg:grid lg:grid-cols-12' : 'hidden'
         }`}
       >
-        {/* LEFT COLUMN: Grand 3D Wheel, 1-Minute Level Countdown & Primary Spin Action */}
+        {/* LEFT COLUMN: Grand 3D Wheel, 30s Training Countdown & Primary Spin Action (or Full-Viewport Giant Wheel Stage) */}
         <section
           aria-label="Roue des Mudras"
-          className="flex flex-col items-center justify-center lg:col-span-7 lg:sticky lg:top-4"
+          className={
+            isWheelFullscreen
+              ? 'fixed inset-0 z-50 flex flex-col items-center justify-between gap-2 overflow-y-auto px-4 py-3 sm:px-6 sm:py-4'
+              : 'flex flex-col items-center justify-center lg:col-span-7 lg:sticky lg:top-4'
+          }
+          style={
+            isWheelFullscreen
+              ? {
+                  background:
+                    'radial-gradient(circle at 50% 48%, rgba(245, 179, 36, 0.24) 0%, rgba(154, 18, 25, 0.96) 44%, #240306 100%)',
+                }
+              : undefined
+          }
         >
-          {/* 1-Minute Per-Level Visual Countdown + 8-Minute Duel Elapsed Tracker */}
-          {isLevelTimerEnabled && (
+          {/* Top Bar visible only in Giant Wheel Fullscreen Mode */}
+          {isWheelFullscreen && (
+            <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2.5">
+              <button
+                type="button"
+                onClick={() => void handleExitWheelFullscreen()}
+                className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border-2 border-[#FCD34D] bg-gradient-to-b from-[#DC2626] to-[#991B1B] px-4 sm:px-5 py-2 text-sm sm:text-base font-extrabold uppercase tracking-wide text-white shadow-lg shadow-black/40 transition-colors hover:from-[#EF2D2D] hover:to-[#B91C1C] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
+              >
+                <Minimize2 className="h-4 w-4 sm:h-5 sm:w-5 shrink-0" aria-hidden="true" />
+                <span>Quitter plein écran</span>
+              </button>
+
+              <div className="text-center">
+                <p className="text-sm sm:text-lg font-extrabold uppercase tracking-wider text-[#FFF8EA] tabular-nums">
+                  {currentLevel.label} · {sequence.length} / {targetCount} mudras
+                </p>
+                {sequence.length > 0 && (
+                  <p className="text-xs sm:text-sm font-bold text-[#FDE68A]">
+                    Dernier tiré : #{sequence.length}{' '}
+                    {sequence[sequence.length - 1].mudra.name.toUpperCase()} —{' '}
+                    {sequence[sequence.length - 1].mudra.meaningFr}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                {sequence.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      dismissFullscreenRevealCard();
+                      setIsSequenceFullscreenOpen(true);
+                    }}
+                    className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border-2 border-[#FDE68A] bg-gradient-to-b from-[#F5B324] to-[#D97706] px-4 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-[#2B0508] shadow-md shadow-black/30 transition-colors hover:from-[#FCD34D] hover:to-[#EAB308] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap tabular-nums"
+                  >
+                    <Maximize2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span>Enchaînement ({sequence.length})</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleToggleMute}
+                  aria-pressed={!isMuted}
+                  aria-label={isMuted ? 'Activer le son de la roue' : 'Couper le son de la roue'}
+                  className="inline-flex min-h-[48px] min-w-[48px] items-center justify-center rounded-xl border border-[#F5B324]/55 bg-[#4A070D]/90 text-[#FCD34D] transition-colors hover:bg-[#6E0D15] hover:border-[#FCD34D] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                >
+                  {isMuted || sfxVolume <= 0.001 ? (
+                    <VolumeX className="h-5 w-5 text-[#F3D9A4]/60" aria-hidden="true" />
+                  ) : (
+                    <Volume2 className="h-5 w-5 text-[#FCD34D]" aria-hidden="true" />
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 30-Second Training Visual Countdown + 8-Minute Duel Elapsed Tracker (normal view) */}
+          {!isWheelFullscreen && isLevelTimerEnabled && (
             <CountdownBanner
               levelLabel={currentLevel.label}
               levelSeconds={levelTimerSec}
@@ -1390,9 +1572,25 @@ export default function App() {
           )}
 
           {/* Warm royal gold aura behind the giant 3D wheel */}
-          <div className="relative flex w-full flex-col items-center">
+          <div className="relative flex w-full flex-1 flex-col items-center justify-center">
+            {/* Always-visible Fullscreen Wheel button in top-right corner of the wheel stage */}
+            {!isWheelFullscreen && (
+              <button
+                type="button"
+                onClick={() => void handleEnterWheelFullscreen()}
+                aria-label="Afficher la roue en plein écran"
+                title="Afficher la roue en plein écran"
+                className="absolute right-1 top-1 z-20 inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border-2 border-[#FCD34D]/85 bg-[#3B050A]/90 px-3 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-[#FFF8EA] shadow-lg shadow-black/40 backdrop-blur-xs transition-colors hover:bg-[#6E0D15] hover:border-[#FEF08A] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+              >
+                <Maximize2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                <span>Plein écran</span>
+              </button>
+            )}
+
             <div
-              className="pointer-events-none absolute inset-0 m-auto h-[90%] w-[90%] max-w-[740px] rounded-full opacity-80"
+              className={`pointer-events-none absolute inset-0 m-auto h-[90%] w-[90%] rounded-full opacity-80 ${
+                isWheelFullscreen ? 'max-w-[1140px]' : 'max-w-[740px]'
+              }`}
               style={{
                 background:
                   'radial-gradient(circle, rgba(252,211,77,0.34) 0%, rgba(245,179,36,0.16) 44%, rgba(139,17,26,0) 74%)',
@@ -1411,50 +1609,57 @@ export default function App() {
               onSpinComplete={handleSpinComplete}
               highlightFinale={isFinaleCompleted}
               mudraSprites={mudraSprites}
+              fullscreen={isWheelFullscreen}
             />
           </div>
 
           {/* Primary Red Action CTA & Level Advance CTA directly beneath the wheel */}
-          <div className="mt-3 flex w-full max-w-[620px] flex-col items-center gap-2.5">
-            <button
-              type="button"
-              onClick={handleSpin}
-              disabled={!canSpin}
-              className={`inline-flex w-full min-h-[60px] items-center justify-center gap-2.5 rounded-2xl px-7 py-3.5 text-lg font-extrabold uppercase tracking-wider shadow-lg transition-all duration-150 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/50 whitespace-nowrap ${
-                canSpin
-                  ? 'border-2 border-[#FCD34D]/85 bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-white hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer shadow-black/35'
-                  : 'border border-[#F5B324]/25 bg-[#4A090F]/70 text-[#F3D9A4]/50 cursor-not-allowed shadow-none'
-              }`}
-            >
-              {isSpinning ? (
-                <>
-                  <Disc3 className="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
-                  <span>LA ROUE TOURNE…</span>
-                </>
-              ) : isFinaleCompleted ? (
-                <>
-                  <Trophy className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                  <span>FINALE VALIDÉE ({maxFinaleCount} MUDRAS)</span>
-                </>
-              ) : hasDrawnFinaleMudras ? (
-                <>
-                  <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                  <span>FINALE PRÊTE ({maxFinaleCount} MUDRAS)</span>
-                </>
-              ) : hasReachedLevelTarget ? (
-                <>
-                  <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                  <span>
-                    {currentLevel.label.toUpperCase()} ATTEINT ({targetCount} MUDRAS)
-                  </span>
-                </>
-              ) : (
-                <>
-                  <RotateCw className="h-5 w-5 shrink-0" aria-hidden="true" />
-                  <span>TOURNER LA ROUE</span>
-                </>
-              )}
-            </button>
+          <div
+            className={`flex w-full flex-col items-center gap-2.5 ${
+              isWheelFullscreen ? 'max-w-[660px]' : 'mt-3 max-w-[620px]'
+            }`}
+          >
+            {(!isWheelFullscreen || (!canAdvanceLevel && !canValidateFinale)) && (
+              <button
+                type="button"
+                onClick={handleSpin}
+                disabled={!canSpin}
+                className={`inline-flex w-full min-h-[60px] items-center justify-center gap-2.5 rounded-2xl px-7 py-3.5 text-lg font-extrabold uppercase tracking-wider shadow-lg transition-all duration-150 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/50 whitespace-nowrap ${
+                  canSpin
+                    ? 'border-2 border-[#FCD34D]/85 bg-gradient-to-b from-[#DC2626] to-[#991B1B] text-white hover:from-[#EF2D2D] hover:to-[#B91C1C] active:scale-[0.985] cursor-pointer shadow-black/35'
+                    : 'border border-[#F5B324]/25 bg-[#4A090F]/70 text-[#F3D9A4]/50 cursor-not-allowed shadow-none'
+                }`}
+              >
+                {isSpinning ? (
+                  <>
+                    <Disc3 className="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
+                    <span>LA ROUE TOURNE…</span>
+                  </>
+                ) : isFinaleCompleted ? (
+                  <>
+                    <Trophy className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                    <span>FINALE VALIDÉE ({maxFinaleCount} MUDRAS)</span>
+                  </>
+                ) : hasDrawnFinaleMudras ? (
+                  <>
+                    <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                    <span>FINALE PRÊTE ({maxFinaleCount} MUDRAS)</span>
+                  </>
+                ) : hasReachedLevelTarget ? (
+                  <>
+                    <Check className="h-5 w-5 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                    <span>
+                      {currentLevel.label.toUpperCase()} ATTEINT ({targetCount} MUDRAS)
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <RotateCw className="h-5 w-5 shrink-0" aria-hidden="true" />
+                    <span>TOURNER LA ROUE</span>
+                  </>
+                )}
+              </button>
+            )}
 
             {canAdvanceLevel && (
               <button
@@ -1482,54 +1687,134 @@ export default function App() {
               </button>
             )}
 
-            <div className="mt-0.5 flex w-full flex-wrap items-center justify-between gap-2 px-1">
-              <p className="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-[#F3D9A4]/80">
-                <Hand className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
-                <span>Tournez, lancez ou arrêtez la roue directement au doigt</span>
-              </p>
-
-              {/* Slim Wheel & SFX Volume Slider directly beneath the wheel */}
-              <div
-                role="group"
-                aria-label="Volume sonore de la roue"
-                className="inline-flex items-center gap-2 rounded-xl border border-[#F5B324]/35 bg-[#3B050A]/80 px-2.5 py-1.5"
-              >
+            {!isWheelFullscreen && (
+              <div className="mt-0.5 flex w-full flex-wrap items-center justify-between gap-2 px-1">
                 <button
                   type="button"
-                  onClick={handleToggleMute}
-                  aria-pressed={!isMuted}
-                  aria-label={isMuted ? 'Activer le son de la roue' : 'Couper le son de la roue'}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#FCD34D] transition-colors hover:bg-[#5E0A12] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                  onClick={() => void handleEnterWheelFullscreen()}
+                  className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#FCD34D]/75 bg-[#5E0A12] px-3.5 py-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-[#FFF8EA] shadow-xs transition-colors hover:bg-[#7A1019] hover:border-[#FDE68A] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D] whitespace-nowrap"
                 >
-                  {isMuted || sfxVolume <= 0.001 ? (
-                    <VolumeX className="h-4 w-4 text-[#F3D9A4]/60" aria-hidden="true" />
-                  ) : (
-                    <Volume2 className="h-4 w-4 text-[#FCD34D]" aria-hidden="true" />
-                  )}
+                  <Maximize2 className="h-4 w-4 shrink-0 text-[#FCD34D]" aria-hidden="true" />
+                  <span>Roue en plein écran</span>
                 </button>
-                <span className="text-[11px] font-bold text-[#F3D9A4]">Son roue</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={isMuted ? 0 : Math.round(sfxVolume * 100)}
-                  onChange={(e) => handleChangeSfxVolume(Number(e.target.value))}
-                  onPointerUp={handlePreviewSfxVolume}
-                  onTouchEnd={handlePreviewSfxVolume}
-                  onKeyUp={handlePreviewSfxVolume}
-                  aria-label="Volume de la roue et des effets sonores"
-                  className="h-2 w-24 sm:w-28 cursor-pointer accent-[#F5B324] touch-manipulation"
-                />
-                <span
-                  aria-hidden="true"
-                  className="w-8 text-right text-[11px] font-extrabold text-[#FDE68A] tabular-nums"
+
+                {/* Slim Wheel & SFX Volume Slider directly beneath the wheel */}
+                <div
+                  role="group"
+                  aria-label="Volume sonore de la roue"
+                  className="inline-flex items-center gap-2 rounded-xl border border-[#F5B324]/35 bg-[#3B050A]/80 px-2.5 py-1.5"
                 >
-                  {isMuted ? 0 : Math.round(sfxVolume * 100)}%
-                </span>
+                  <button
+                    type="button"
+                    onClick={handleToggleMute}
+                    aria-pressed={!isMuted}
+                    aria-label={isMuted ? 'Activer le son de la roue' : 'Couper le son de la roue'}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#FCD34D] transition-colors hover:bg-[#5E0A12] cursor-pointer touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FCD34D]"
+                  >
+                    {isMuted || sfxVolume <= 0.001 ? (
+                      <VolumeX className="h-4 w-4 text-[#F3D9A4]/60" aria-hidden="true" />
+                    ) : (
+                      <Volume2 className="h-4 w-4 text-[#FCD34D]" aria-hidden="true" />
+                    )}
+                  </button>
+                  <span className="text-[11px] font-bold text-[#F3D9A4]">Son roue</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={isMuted ? 0 : Math.round(sfxVolume * 100)}
+                    onChange={(e) => handleChangeSfxVolume(Number(e.target.value))}
+                    onPointerUp={handlePreviewSfxVolume}
+                    onTouchEnd={handlePreviewSfxVolume}
+                    onKeyUp={handlePreviewSfxVolume}
+                    aria-label="Volume de la roue et des effets sonores"
+                    className="h-2 w-24 sm:w-28 cursor-pointer accent-[#F5B324] touch-manipulation"
+                  />
+                  <span
+                    aria-hidden="true"
+                    className="w-8 text-right text-[11px] font-extrabold text-[#FDE68A] tabular-nums"
+                  >
+                    {isMuted ? 0 : Math.round(sfxVolume * 100)}%
+                  </span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
+
+          {/* 3-Second Drawn Mudra Reveal Card Overlay in Giant Wheel Fullscreen Mode */}
+          {isWheelFullscreen && fullscreenRevealCard && (() => {
+            const { id, stepNumber, mudra, isLeaving } = fullscreenRevealCard;
+            const sprite = mudraSprites[mudra.id];
+            return (
+              <div
+                key={id}
+                role="status"
+                aria-live="polite"
+                onClick={dismissFullscreenRevealCard}
+                className="fixed inset-0 z-[54] flex items-center justify-center bg-[#1A0204]/68 p-4 backdrop-blur-xs cursor-pointer"
+              >
+                <div
+                  className={`relative w-full max-w-[430px] overflow-hidden rounded-3xl border-2 border-[#FCD34D] bg-[#3B050A]/98 p-6 sm:p-7 text-center shadow-2xl shadow-black/75 ${
+                    isLeaving ? 'animate-level-ok-out' : 'animate-level-ok-in'
+                  }`}
+                >
+                  <div className="mb-4 flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-2 rounded-xl border border-[#FCD34D]/75 bg-[#991B1B] px-3 py-1 text-xs sm:text-sm font-extrabold uppercase tracking-wider text-[#FFF8EA] tabular-nums">
+                      <span>Mudra #{stepNumber}</span>
+                      <span className="text-[#FDE68A]/80">/ {targetCount}</span>
+                    </span>
+                    <span
+                      className="h-4 w-4 shrink-0 rounded-full border border-[#FDE68A]/70"
+                      style={{ backgroundColor: mudra.colorHex }}
+                      aria-hidden="true"
+                    />
+                  </div>
+
+                  {isSequenceHidden ? (
+                    <div
+                      aria-label="Image du geste masquée"
+                      className="mx-auto flex aspect-square w-full max-w-[260px] sm:max-w-[290px] items-center justify-center rounded-2xl border-2 border-dashed border-[#F5B324]/55 bg-[#240306]/90"
+                    >
+                      <span className="text-7xl font-extrabold text-[#FCD34D]/65">?</span>
+                    </div>
+                  ) : (
+                    <div className="mx-auto flex aspect-square w-full max-w-[260px] sm:max-w-[290px] items-center justify-center rounded-2xl border-2 border-[#F5B324] bg-[#FFF8EA] p-4 shadow-xl shadow-black/40">
+                      {sprite ? (
+                        <img
+                          src={sprite.dataUrl}
+                          alt={`Geste ${mudra.name.toUpperCase()}`}
+                          className="h-full w-full object-contain"
+                        />
+                      ) : (
+                        <Hand className="h-20 w-20 text-[#991B1B]" aria-hidden="true" />
+                      )}
+                    </div>
+                  )}
+
+                  <h2 className="mt-5 text-3xl sm:text-4xl font-extrabold uppercase tracking-wider text-[#FFF8EA]">
+                    {mudra.name.toUpperCase()}
+                  </h2>
+                  <p className="mt-1 text-lg sm:text-xl font-bold text-[#FDE68A]">
+                    {mudra.meaningFr}
+                  </p>
+
+                  {/* Smooth 3-second visual timer bar */}
+                  <div
+                    className="mt-5 h-2 w-full overflow-hidden rounded-full bg-[#240306]"
+                    aria-hidden="true"
+                  >
+                    <div
+                      className="animate-reveal-card-timer h-full w-full rounded-full"
+                      style={{
+                        background: 'linear-gradient(90deg, #DC2626 0%, #F5B324 58%, #FEF08A 100%)',
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </section>
 
         {/* RIGHT COLUMN: All Info (Famille 1 & 2, Les niveaux, Enchaînements) */}
@@ -2100,7 +2385,7 @@ export default function App() {
 
         return (
           <div
-            className="fixed inset-0 z-50 flex flex-col justify-between overflow-y-auto bg-[#2B0408]/98 px-4 py-4 sm:px-8 sm:py-6 backdrop-blur-md"
+            className="fixed inset-0 z-[58] flex flex-col justify-between overflow-y-auto bg-[#2B0408]/98 px-4 py-4 sm:px-8 sm:py-6 backdrop-blur-md"
             role="dialog"
             aria-modal="true"
             aria-labelledby="fullscreen-sequence-title"

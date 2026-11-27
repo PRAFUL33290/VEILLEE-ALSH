@@ -34,6 +34,7 @@ interface MudraWheel3DProps {
   onSpinComplete: (verifiedSectorIndex: number) => void;
   highlightFinale: boolean;
   mudraSprites: Record<number, MudraSpriteAsset>;
+  fullscreen?: boolean;
 }
 
 const WHEEL_RADIUS = 2.66;
@@ -451,6 +452,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       onSpinComplete,
       highlightFinale,
       mudraSprites,
+      fullscreen = false,
     },
     ref,
   ) {
@@ -489,6 +491,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
     const faceCanvasRef = useRef<HTMLCanvasElement | null>(null);
     const faceTextureRef = useRef<THREE.CanvasTexture | null>(null);
     const requestRenderRef = useRef<(() => void) | null>(null);
+    const requestResizeRef = useRef<(() => void) | null>(null);
 
     const spinStateRef = useRef({
       active: false,
@@ -927,6 +930,21 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
       }
     }, [highlightFinale, useFallback]);
 
+    // Force immediate WebGL canvas resize & re-render when toggling fullscreen wheel stage
+    useEffect(() => {
+      if (useFallback) return;
+      const raf1 = requestAnimationFrame(() => {
+        requestResizeRef.current?.();
+      });
+      const timer = window.setTimeout(() => {
+        requestResizeRef.current?.();
+      }, 120);
+      return () => {
+        cancelAnimationFrame(raf1);
+        window.clearTimeout(timer);
+      };
+    }, [fullscreen, useFallback]);
+
     useEffect(() => {
       const container = mountRef.current;
       if (!container) return;
@@ -1343,6 +1361,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         renderer.setSize(w, h, false);
         requestRender();
       };
+      requestResizeRef.current = handleResize;
 
       if (!isSoftwareGl) {
         // Warm GPU shaders & shadow map once even if container starts hidden on HomeScreen
@@ -1555,6 +1574,7 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
         disposed = true;
         triggerLoopRef.current = null;
         requestRenderRef.current = null;
+        requestResizeRef.current = null;
         rotorGroupRef.current = null;
         faceCanvasRef.current = null;
         faceTextureRef.current = null;
@@ -1598,7 +1618,11 @@ export const MudraWheel3D = forwardRef<MudraWheelHandle, MudraWheel3DProps>(
             onWheelClick();
           }
         }}
-        className={`relative flex aspect-square w-full max-w-[760px] items-center justify-center mx-auto rounded-full touch-none select-none outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/60 ${
+        className={`relative flex aspect-square items-center justify-center mx-auto rounded-full touch-none select-none outline-none focus-visible:ring-4 focus-visible:ring-[#FCD34D]/60 ${
+          fullscreen
+            ? 'h-[min(78vh,92vw)] w-[min(78vh,92vw)] max-h-[1180px] max-w-[1180px]'
+            : 'w-full max-w-[760px]'
+        } ${
           isDragging ? 'cursor-grabbing' : 'cursor-grab'
         }`}
       >

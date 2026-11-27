@@ -57,7 +57,7 @@ export function LevelSuccessToast({ announcement }: LevelSuccessToastProps) {
       key={announcement.id}
       role="status"
       aria-live="polite"
-      className="pointer-events-none fixed inset-x-0 top-20 sm:top-24 z-40 flex justify-center px-4"
+      className="pointer-events-none fixed inset-x-0 top-20 sm:top-24 z-[65] flex justify-center px-4"
     >
       <div
         className={`relative flex items-center gap-3.5 sm:gap-4 rounded-2xl border-2 border-[#FCD34D] bg-[#2D0408]/96 px-5 py-3.5 sm:px-6 sm:py-4 shadow-2xl shadow-black/65 backdrop-blur-md ${

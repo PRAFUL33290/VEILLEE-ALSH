@@ -140,6 +140,20 @@
   animation: okPop 320ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+@keyframes revealCardTimer {
+  0% {
+    transform: scaleX(1);
+  }
+  100% {
+    transform: scaleX(0);
+  }
+}
+
+.animate-reveal-card-timer {
+  transform-origin: left center;
+  animation: revealCardTimer 5000ms linear forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-lotus-reveal,
   .animate-level-ok-in,
@@ -147,7 +161,8 @@
   .animate-level-ok-ring,
   .animate-check-draw,
   .animate-level-ok-spark,
-  .animate-ok-pop {
+  .animate-ok-pop,
+  .animate-reveal-card-timer {
     animation: none;
   }
 

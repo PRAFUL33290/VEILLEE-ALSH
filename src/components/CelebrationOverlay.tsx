@@ -136,7 +136,7 @@ export function CelebrationOverlay({ active }: CelebrationOverlayProps) {
     <canvas
       ref={canvasRef}
       aria-hidden="true"
-      className="pointer-events-none fixed inset-0 z-40"
+      className="pointer-events-none fixed inset-0 z-[55]"
     />
   );
 }
